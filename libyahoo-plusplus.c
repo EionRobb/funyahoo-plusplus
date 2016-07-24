@@ -12,8 +12,22 @@
 #ifdef __GNUC__
 	#include <unistd.h>
 #endif
+#include <errno.h>
 
 #include <json-glib/json-glib.h>
+// Supress overzealous json-glib 'critical errors'
+#define json_object_get_int_member(JSON_OBJECT, MEMBER) \
+	(json_object_has_member(JSON_OBJECT, MEMBER) ? json_object_get_int_member(JSON_OBJECT, MEMBER) : 0)
+#define json_object_get_string_member(JSON_OBJECT, MEMBER) \
+	(json_object_has_member(JSON_OBJECT, MEMBER) ? json_object_get_string_member(JSON_OBJECT, MEMBER) : NULL)
+#define json_object_get_array_member(JSON_OBJECT, MEMBER) \
+	(json_object_has_member(JSON_OBJECT, MEMBER) ? json_object_get_array_member(JSON_OBJECT, MEMBER) : NULL)
+#define json_object_get_object_member(JSON_OBJECT, MEMBER) \
+	(json_object_has_member(JSON_OBJECT, MEMBER) ? json_object_get_object_member(JSON_OBJECT, MEMBER) : NULL)
+#define json_object_get_boolean_member(JSON_OBJECT, MEMBER) \
+	(json_object_has_member(JSON_OBJECT, MEMBER) ? json_object_get_boolean_member(JSON_OBJECT, MEMBER) : FALSE)
+
+
 
 #include <accountopt.h>
 #include <core.h>
@@ -21,6 +35,7 @@
 #include <prpl.h>
 #include <request.h>
 #include <version.h>
+
 
 #ifndef _
 #	define _(a) (a)
@@ -227,11 +242,12 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 	g_string_free(headers, TRUE);
 }
 
-
+static void yahoo_socket_write_json(YahooAccount *ya, JsonObject *data);
 
 static void
 yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpointer user_data)
 {
+	JsonObject *response = NULL;
 	YahooAccount *ya = user_data;
 	JsonObject *obj = json_node_get_object(element_node);
 	
@@ -242,10 +258,14 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 			gint64 timestamp = json_object_get_int_member(obj, "createdTime") / 1000;
 			
 			serv_got_im(ya->pc, user, message, PURPLE_MESSAGE_RECV, timestamp);
-			
-			//todo send ack
 		}
+	} else if (purple_strequal(json_object_get_string_member(obj, "msg"), "SyncBatch")) {
+		response = json_object_new();
+		json_object_set_string_member(response, "msg", "SyncAck");
+		json_object_set_string_member(response, "pushId", json_object_get_string_member(obj, "pushId"));
 	}
+	
+	yahoo_socket_write_json(ya, response);
 }
 
 static void yahoo_start_socket(YahooAccount *ya);
@@ -391,13 +411,78 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 		guint64 ack = json_object_get_int_member(message, "ack");
 		JsonArray *data = json_object_get_array_member(message, "data");
 		
-		json_array_foreach_element(json_array_get_array_element(data, 0), yahoo_process_msg, ya);
-		
 		ya->seq = ack;
 		ya->ack = seq;
+		json_array_foreach_element(json_array_get_array_element(data, 0), yahoo_process_msg, ya);
+		
 	}
 	
 	g_object_unref(parser);
+}
+
+static void
+yahoo_socket_write_data(YahooAccount *ya, guchar *data, gsize data_len, guchar type)
+{
+	if (type == 0) {
+		type = 129;
+	}
+	purple_ssl_write(ya->websocket, &type, 1);
+	
+	if (data_len <= 125) {
+		purple_ssl_write(ya->websocket, &data_len, 1);
+	} else if (data_len <= 0xFFFF) {
+		guchar len_buf[2];
+		len_buf[0] = (data_len >> 8) & 0xFF;
+		len_buf[1] = data_len & 0xFF;
+		purple_ssl_write(ya->websocket, len_buf, 2);
+	} else {
+		guint be_len = GUINT64_TO_BE(data_len);
+		purple_ssl_write(ya->websocket, &be_len, 8);
+	}
+	purple_ssl_write(ya->websocket, data, data_len);
+}
+
+static void
+yahoo_socket_write_json(YahooAccount *ya, JsonObject *data)
+{
+	JsonNode *node;
+	JsonObject *object;
+	JsonArray *data_array;
+	JsonArray *inner_data_array;
+	gchar *str;
+	gsize len;
+	JsonGenerator *generator;
+	
+	if (ya->websocket == NULL) {
+		//TODO error?
+		return;
+	}
+	
+	data_array = json_array_new();
+	inner_data_array = json_array_new();
+	
+	if (data != NULL) {
+		json_array_add_object_element(inner_data_array, data);
+		json_array_add_array_element(data_array, inner_data_array);
+	}
+	
+	object = json_object_new();
+	json_object_set_int_member(object, "seq", ya->seq + 1);
+	json_object_set_int_member(object, "ack", ya->ack + 1);
+	json_object_set_array_member(object, "data", data_array);
+	
+	node = json_node_new(JSON_NODE_OBJECT);
+	json_node_set_object(node, object);
+	
+	generator = json_generator_new();
+	json_generator_set_root(generator, node);
+	str = json_generator_to_data(generator, &len);
+	g_object_unref(generator);
+	
+	yahoo_socket_write_data(ya, (guchar *)str, len, 0);
+	
+	g_free(str);
+	json_node_free(node);
 }
 
 static void
@@ -448,6 +533,33 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 					purple_connection_error(ya->pc, "Websocket closed");
 					
 					return;
+				} else if (ya->packet_code == 137) {
+					// Ping
+					gint ping_frame_len;
+					guchar *pong_data;
+					length_code = 0;
+					purple_ssl_read(conn, &length_code, 1);
+					if (length_code <= 125) {
+						ping_frame_len = length_code;
+					} else if (length_code == 126) {
+						guchar len_buf[2];
+						purple_ssl_read(conn, len_buf, 2);
+						ping_frame_len = (len_buf[0] << 8) + len_buf[1];
+					} else if (length_code == 127) {
+						purple_ssl_read(conn, &ping_frame_len, 8);
+						ping_frame_len = GUINT64_FROM_BE(ping_frame_len);
+					}
+					//TODO - dont be dumb
+					pong_data = g_new0(guchar, ping_frame_len);
+					purple_ssl_read(conn, pong_data, ping_frame_len);
+					
+					yahoo_socket_write_data(ya, pong_data, ping_frame_len, 138);
+					g_free(pong_data);
+					return;
+				} else if (ya->packet_code == 138) {
+					// Pong
+					//who cares
+					return;
 				}
 				purple_debug_error("yahoo", "unknown websocket error %d\n", ya->packet_code);
 				return;
@@ -489,7 +601,7 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 		}
 	}
 	
-	if (done_some_reads == FALSE && read_len == 0) {
+	if ((done_some_reads == FALSE && read_len == 0) || (done_some_reads == FALSE && read_len < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
 		purple_connection_error_reason(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Lost connection to server");
 	}
 }
