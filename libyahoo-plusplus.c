@@ -186,8 +186,8 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 {
 	PurpleAccount *account;
 	GString *headers;
-    gchar *host = NULL, *path = NULL, *user = NULL, *password = NULL;
-    int port;
+	gchar *host = NULL, *path = NULL, *user = NULL, *password = NULL;
+	int port;
 	YahooProxyConnection *conn;
 	gchar *cookies;
 	
@@ -198,8 +198,8 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 	conn->ya = ya;
 	conn->callback = callback;
 	conn->user_data = user_data;
-    
-    purple_url_parse(url, &host, &port, &path, &user, &password);
+
+	purple_url_parse(url, &host, &port, &path, &user, &password);
 	purple_debug_info("yahoo", "Fetching url %s\n", url);
 	
 	headers = g_string_new(NULL);
@@ -207,16 +207,16 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 	//Use the full 'url' until libpurple can handle path's longer than 256 chars
 	g_string_append_printf(headers, "%s /%s HTTP/1.0\r\n", (postdata ? "POST" : "GET"), path);
 	//g_string_append_printf(headers, "%s %s HTTP/1.0\r\n", (postdata ? "POST" : "GET"), url);
-    g_string_append_printf(headers, "Connection: close\r\n");
-    g_string_append_printf(headers, "Host: %s\r\n", host);
-    g_string_append_printf(headers, "Accept: */*\r\n");
+	g_string_append_printf(headers, "Connection: close\r\n");
+	g_string_append_printf(headers, "Host: %s\r\n", host);
+	g_string_append_printf(headers, "Accept: */*\r\n");
 	g_string_append_printf(headers, "User-Agent: " YAHOO_USERAGENT "\r\n");
 	
 	cookies = yahoo_cookies_to_string(ya);
 	g_string_append_printf(headers, "Cookie: %s\r\n", cookies);
 	g_free(cookies);
-    
-    if(postdata) {
+
+	if(postdata) {
 		purple_debug_info("yahoo", "With postdata %s\n", postdata);
 		
 		if (postdata[0] == '{') {
@@ -224,20 +224,20 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 		} else {
 			g_string_append(headers, "Content-Type: application/x-www-form-urlencoded\r\n");
 		}
-        g_string_append_printf(headers, "Content-Length: %d\r\n", strlen(postdata));
-        g_string_append(headers, "\r\n");
-        
-        g_string_append(headers, postdata);
-    } else {
-        g_string_append(headers, "\r\n");
-    }
-    
-    g_free(host);
-    g_free(path);
-    g_free(user);
-    g_free(password);
-    
-    purple_util_fetch_url_request_len_with_account(ya->account, url, FALSE, YAHOO_USERAGENT, TRUE, headers->str, TRUE, 6553500, yahoo_response_callback, conn);
+		g_string_append_printf(headers, "Content-Length: %d\r\n", strlen(postdata));
+		g_string_append(headers, "\r\n");
+
+		g_string_append(headers, postdata);
+	} else {
+		g_string_append(headers, "\r\n");
+	}
+
+	g_free(host);
+	g_free(path);
+	g_free(user);
+	g_free(password);
+
+	purple_util_fetch_url_request_len_with_account(ya->account, url, FALSE, YAHOO_USERAGENT, TRUE, headers->str, TRUE, 6553500, yahoo_response_callback, conn);
 	
 	g_string_free(headers, TRUE);
 }
@@ -265,7 +265,7 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 		json_object_set_string_member(response, "pushId", json_object_get_string_member(obj, "pushId"));
 	}
 	
-	yahoo_socket_write_json(ya, response);
+	//yahoo_socket_write_json(ya, response);
 }
 
 static void yahoo_start_socket(YahooAccount *ya);
@@ -279,6 +279,8 @@ yahoo_rpc_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 		//connected
 		ya->session_token = g_strdup(json_object_get_string_member(obj, "sessionToken"));
 		ya->channel = g_strdup(json_object_get_string_member(obj, "channelId"));
+		
+		purple_connection_set_state(ya->pc, PURPLE_CONNECTED);
 		
 		//process batch
 		json_array_foreach_element(json_object_get_array_member(obj, "batch"), yahoo_process_msg, ya);
@@ -295,7 +297,11 @@ yahoo_auth_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 	JsonObject *obj = json_node_get_object(node);
 	
 	if (purple_strequal(json_object_get_string_member(obj, "status"), "error")) {
-		purple_connection_error(ya->pc, json_object_get_string_member(obj, "message"));
+		if (purple_strequal(json_object_get_string_member(obj, "code"), "1212")) {
+			purple_connection_error_reason(ya->pc, PURPLE_CONNECTION_ERROR_AUTHENTICATION_FAILED,  json_object_get_string_member(obj, "message"));
+		} else {
+			purple_connection_error(ya->pc, json_object_get_string_member(obj, "message"));
+		}
 	} else {
 		const gchar *rpcdata = "{\"msg\":\"OpenSession\",\"device\":{\"kind\":\"mobile\"},\"auth\":{\"provider\":\"signin\"},\"version\":{\"platform\":\"web\",\"app\":\"iris/dogfood\",\"appVersion\":897},\"batch\":[]}";
 		yahoo_fetch_url(ya, "https://prod.iris.yahoo.com/prod/rpc?wait=1&v=1", rpcdata, yahoo_rpc_callback, NULL);
@@ -423,23 +429,40 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 static void
 yahoo_socket_write_data(YahooAccount *ya, guchar *data, gsize data_len, guchar type)
 {
+	guchar *full_data;
+	guint len_size = 1;
+	
+	if (data_len > 125) {
+		if (data_len <= 0xFFFF) {
+			len_size = 5;
+		} else {
+			len_size = 9;
+		}
+	}
+	full_data = g_new0(guchar, 1 + data_len + len_size);
+	
 	if (type == 0) {
 		type = 129;
 	}
-	purple_ssl_write(ya->websocket, &type, 1);
+	full_data[0] = type;
 	
 	if (data_len <= 125) {
-		purple_ssl_write(ya->websocket, &data_len, 1);
+		full_data[1] = data_len;
 	} else if (data_len <= 0xFFFF) {
-		guchar len_buf[2];
-		len_buf[0] = (data_len >> 8) & 0xFF;
-		len_buf[1] = data_len & 0xFF;
-		purple_ssl_write(ya->websocket, len_buf, 2);
+		full_data[1] = 126;
+		full_data[2] = (data_len >> 8) & 0xFF;
+		full_data[3] = data_len & 0xFF;
 	} else {
-		guint be_len = GUINT64_TO_BE(data_len);
-		purple_ssl_write(ya->websocket, &be_len, 8);
+		guint64 be_len = GUINT64_TO_BE(data_len);
+		full_data[1] = 127;
+		memmove(&full_data[2], &be_len, 8);
 	}
-	purple_ssl_write(ya->websocket, data, data_len);
+	
+	memmove(&full_data[1 + len_size], data, data_len);
+	
+	purple_ssl_write(ya->websocket, full_data, 1 + data_len + len_size);
+	
+	g_free(full_data);
 }
 
 static void
@@ -467,7 +490,7 @@ yahoo_socket_write_json(YahooAccount *ya, JsonObject *data)
 	}
 	
 	object = json_object_new();
-	json_object_set_int_member(object, "seq", ya->seq + 1);
+	json_object_set_int_member(object, "seq", ya->seq);
 	json_object_set_int_member(object, "ack", ya->ack + 1);
 	json_object_set_array_member(object, "data", data_array);
 	
@@ -601,7 +624,7 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 		}
 	}
 	
-	if ((done_some_reads == FALSE && read_len == 0) || (done_some_reads == FALSE && read_len < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+	if ((done_some_reads == FALSE && read_len <= 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
 		purple_connection_error_reason(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Lost connection to server");
 	}
 }
@@ -668,7 +691,31 @@ yahoo_start_socket(YahooAccount *ya)
 
 
 
-
+static int 
+yahoo_send_im(PurpleConnection *pc, const gchar *who, const gchar *message, PurpleMessageFlags flags)
+{
+	JsonObject *data = json_object_new();
+	YahooAccount *ya = pc->proto_data;
+	gchar *stripped;
+	//gchar *group_id = "O64RNTW2EFHX5FIMJV7FRZQ52M";
+	
+	json_object_set_string_member(data, "msg", "InsertItem");
+	
+	stripped = g_strstrip(purple_markup_strip_html(message));
+	json_object_set_string_member(data, "message", stripped);
+	g_free(stripped);
+	
+	//TODO
+	json_object_set_string_member(data, "groupId", "O64RNTW2EFHX5FIMJV7FRZQ52M");
+	//json_object_set_string_member(data, "itemId", "000000000001FFFF");
+	json_object_set_int_member(data, "expectedMediaCount", 0);
+	//json_object_set_int_member(data, "opId", 1);
+	
+	
+	yahoo_socket_write_json(ya, data);
+	
+	return 1;
+}
 
 
 static const char *
@@ -737,7 +784,7 @@ PurplePluginProtocolInfo prpl_info = {
 	NULL,                /* chat_info_defaults */
 	yahoo_login,         /* login */
 	yahoo_close,         /* close */
-	NULL,                /* send_im */
+	yahoo_send_im,       /* send_im */
 	NULL,                /* set_info */
 	NULL,                /* send_typing */
 	NULL,                /* get_info */
