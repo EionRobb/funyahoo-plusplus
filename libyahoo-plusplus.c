@@ -426,20 +426,36 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 	g_object_unref(parser);
 }
 
+static guchar *
+yahoo_websocket_mask(guchar key[4], const guchar *pload, guint64 psize)
+{
+	guint64 i;
+	guchar *ret = g_new0(guchar, psize);
+
+	for (i = 0; i < psize; i++) {
+		ret[i] = pload[i] ^ key[i % 4];
+	}
+
+	return ret;
+}
+
 static void
 yahoo_socket_write_data(YahooAccount *ya, guchar *data, gsize data_len, guchar type)
 {
 	guchar *full_data;
 	guint len_size = 1;
+	guchar mkey[4] = { 0x12, 0x34, 0x56, 0x78 };
+	
+	data = yahoo_websocket_mask(mkey, data, data_len);
 	
 	if (data_len > 125) {
-		if (data_len <= 0xFFFF) {
-			len_size = 5;
+		if (data_len <= G_MAXUINT16) {
+			len_size += 2;
 		} else {
-			len_size = 9;
+			len_size += 8;
 		}
 	}
-	full_data = g_new0(guchar, 1 + data_len + len_size);
+	full_data = g_new0(guchar, 1 + data_len + len_size + 4);
 	
 	if (type == 0) {
 		type = 129;
@@ -447,20 +463,21 @@ yahoo_socket_write_data(YahooAccount *ya, guchar *data, gsize data_len, guchar t
 	full_data[0] = type;
 	
 	if (data_len <= 125) {
-		full_data[1] = data_len;
-	} else if (data_len <= 0xFFFF) {
-		full_data[1] = 126;
-		full_data[2] = (data_len >> 8) & 0xFF;
-		full_data[3] = data_len & 0xFF;
+		full_data[1] = data_len | 0x80;
+	} else if (data_len <= G_MAXUINT16) {
+		guint16 be_len = GUINT16_TO_BE(data_len);
+		full_data[1] = 126 | 0x80;
+		memmove(full_data + 2, &be_len, 2);
 	} else {
 		guint64 be_len = GUINT64_TO_BE(data_len);
-		full_data[1] = 127;
-		memmove(&full_data[2], &be_len, 8);
+		full_data[1] = 127 | 0x80;
+		memmove(full_data + 2, &be_len, 8);
 	}
 	
-	memmove(&full_data[1 + len_size], data, data_len);
+	memmove(full_data + (1 + len_size), &mkey, 4);
+	memmove(full_data + (1 + len_size + 4), data, data_len);
 	
-	purple_ssl_write(ya->websocket, full_data, 1 + data_len + len_size);
+	purple_ssl_write(ya->websocket, full_data, 1 + data_len + len_size + 4);
 	
 	g_free(full_data);
 }
