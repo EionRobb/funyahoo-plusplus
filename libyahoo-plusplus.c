@@ -829,8 +829,10 @@ yahoo_socket_write_data(YahooAccount *ya, guchar *data, gsize data_len, guchar t
 	purple_ssl_write(ya->websocket, full_data, 1 + data_len + len_size + 4);
 	
 	g_free(full_data);
+	g_free(data);
 }
 
+/* takes ownership of data parameter */
 static void
 yahoo_socket_write_json(YahooAccount *ya, JsonObject *data)
 {
@@ -843,14 +845,17 @@ yahoo_socket_write_json(YahooAccount *ya, JsonObject *data)
 	JsonGenerator *generator;
 	
 	if (ya->websocket == NULL) {
+		if (data != NULL) {
+			json_object_unref(data);
+		}
 		//TODO error?
 		return;
 	}
 	
 	data_array = json_array_new();
-	inner_data_array = json_array_new();
 	
 	if (data != NULL) {
+		inner_data_array = json_array_new();
 		json_array_add_object_element(inner_data_array, data);
 		json_array_add_array_element(data_array, inner_data_array);
 	}
@@ -872,6 +877,7 @@ yahoo_socket_write_json(YahooAccount *ya, JsonObject *data)
 	
 	g_free(str);
 	json_node_free(node);
+	json_object_unref(object);
 	
 	if (data != NULL) {
 		ya->seq += 1;
