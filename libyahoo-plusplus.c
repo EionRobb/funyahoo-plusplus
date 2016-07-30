@@ -479,6 +479,9 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 					g_free(message);
 				}
 			}
+		} else if (purple_strequal(key, "BlockedUser")) {
+			const gchar *userId = json_array_get_string_element(key_array, 1);
+			purple_privacy_deny_add(ya->account, userId, TRUE);
 		}
 	} else if (purple_strequal(msg, "SyncBatch")) {
 		response = json_object_new();
@@ -491,6 +494,14 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 		response = json_object_new();
 		json_object_set_string_member(response, "msg", "MutationResponseAck");
 		json_object_set_string_member(response, "ackId", json_object_get_string_member(obj, "ackId"));
+	} else if (purple_strequal(msg, "DropEntity")) {
+		JsonArray *key_array = json_object_get_array_member(obj, "key");
+		const gchar *key = json_array_get_string_element(key_array, 0);
+		
+		if (purple_strequal(key, "BlockedUser")) {
+			const gchar *userId = json_array_get_string_element(key_array, 1);
+			purple_privacy_deny_remove(ya->account, userId, TRUE);
+		}
 	}
 	
 	yahoo_socket_write_json(ya, response);
@@ -973,6 +984,33 @@ yahoo_start_socket(YahooAccount *ya)
 
 
 
+void
+yahoo_block_user(PurpleConnection *pc, const char *who)
+{
+	YahooAccount *ya = pc->proto_data;
+	JsonObject *data = json_object_new();
+	
+	json_object_set_string_member(data, "msg", "SetUserBlocked");
+	json_object_set_string_member(data, "userId", who);
+	json_object_set_int_member(data, "opId", ya->opid++);
+	json_object_set_boolean_member(data, "blocked", TRUE);
+	
+	yahoo_socket_write_json(ya, data);
+}
+
+void
+yahoo_unblock_user(PurpleConnection *pc, const char *who)
+{
+	YahooAccount *ya = pc->proto_data;
+	JsonObject *data = json_object_new();
+	
+	json_object_set_string_member(data, "msg", "SetUserBlocked");
+	json_object_set_string_member(data, "userId", who);
+	json_object_set_int_member(data, "opId", ya->opid++);
+	json_object_set_boolean_member(data, "blocked", FALSE);
+	
+	yahoo_socket_write_json(ya, data);
+}
 
 
 static GList *
@@ -1192,9 +1230,9 @@ PurplePluginProtocolInfo prpl_info = {
 	NULL,                /* remove_buddy */
 	NULL,                /* remove_buddies */
 	NULL,                /* add_permit */
-	NULL,                /* add_deny */
+	yahoo_block_user,    /* add_deny */
 	NULL,                /* rem_permit */
-	NULL,                /* rem_deny */
+	yahoo_unblock_user,  /* rem_deny */
 	NULL,                /* set_permit_deny */
 	yahoo_join_chat,     /* join_chat */
 	NULL,                /* reject chat invite */
