@@ -27,6 +27,24 @@
 #define g_hash_table_contains(hash_table, key) g_hash_table_lookup_extended(hash_table, key, NULL, NULL)
 #endif /* 2.32.0 */
 
+static gboolean
+g_str_insensitive_equal(gconstpointer v1, gconstpointer v2)
+{
+	return (g_ascii_strcasecmp(v1, v2) == 0);
+}
+static guint
+g_str_insensitive_hash(gconstpointer v)
+{
+	guint hash;
+	gchar *lower_str = g_ascii_strdown(v, -1);
+	
+	hash = g_str_hash(lower_str);
+	g_free(lower_str);
+	
+	return hash;
+}
+
+
 // GNU C libraries
 #include <stdio.h>
 #include <stdlib.h>
@@ -134,6 +152,7 @@ typedef struct {
 	GHashTable *one_to_ones;     // A store of known groupId's->userId's
 	GHashTable *one_to_ones_rev; // A store of known userId's->groupId's
 	GHashTable *group_chats;     // A store of known multi-user groupId's
+	GHashTable *sent_message_ids;// A store of message id's that we generated from this instance
 	
 } YahooAccount;
 
@@ -314,9 +333,43 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 	g_string_free(headers, TRUE);
 }
 
+static void
+yahoo_process_mutation_op_entity(JsonArray *array, guint index_, JsonNode *element_node, gpointer user_data)
+{
+	YahooAccount *ya = user_data;
+	JsonArray *change_array = json_node_get_array(element_node);
+	JsonArray *entity;
+	
+	if (json_array_get_int_element(change_array, 1) == 1) {
+		//String change
+		entity = json_array_get_array_element(change_array, 0);
+		if (json_array_get_length(entity) == 4 &&
+		    purple_strequal(json_array_get_string_element(entity, 0), "Group") &&
+		    purple_strequal(json_array_get_string_element(entity, 2), "items")) {
+			
+			const gchar *oldItemId = json_array_get_string_element(change_array, 2);
+			if (g_hash_table_contains(ya->sent_message_ids, oldItemId)) {
+				const gchar *newItemId = json_array_get_string_element(entity, 3);
+				
+				g_hash_table_remove(ya->sent_message_ids, oldItemId);
+				g_hash_table_replace(ya->sent_message_ids, g_strdup(newItemId), NULL);
+			}
+		}
+	}
+}
+
+static void
+yahoo_process_mutation_op(JsonArray *array, guint index_, JsonNode *element_node, gpointer user_data)
+{
+	YahooAccount *ya = user_data;
+	JsonObject *op = json_node_get_object(element_node);
+	
+	json_array_foreach_element_reverse(json_object_get_array_member(op, "entities"), yahoo_process_mutation_op_entity, ya);
+}
+
 static void yahoo_socket_write_json(YahooAccount *ya, JsonObject *data);
 static GHashTable *yahoo_chat_info_defaults(PurpleConnection *pc, const char *chatname);
-
+	
 static void
 yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpointer user_data)
 {
@@ -324,8 +377,9 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 	YahooAccount *ya = user_data;
 	JsonObject *obj = json_node_get_object(element_node);
 	PurpleGroup *yahoo_group = NULL;
+	const gchar *msg = json_object_get_string_member(obj, "msg");
 	
-	if (purple_strequal(json_object_get_string_member(obj, "msg"), "NewEntity")) {
+	if (purple_strequal(msg, "NewEntity")) {
 		JsonArray *key_array = json_object_get_array_member(obj, "key");
 		const gchar *key = json_array_get_string_element(key_array, 0);
 		const gchar *subkey = json_array_get_length(key_array) > 2 ? json_array_get_string_element(key_array, 2) : NULL;
@@ -343,6 +397,13 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 						purple_blist_add_group(yahoo_group, NULL);
 					}
 					purple_blist_add_buddy(buddy, NULL, yahoo_group, NULL);
+				}
+				
+				if (G_UNLIKELY(purple_strequal(userId, ya->self_user))) {
+					const gchar *account_alias = purple_account_get_alias(ya->account);
+					if (G_UNLIKELY(!account_alias || !*account_alias)) {
+						purple_account_set_alias(ya->account, json_object_get_string_member(obj, "fullName"));
+					}
 				}
 				
 				purple_prpl_got_user_status(ya->account, userId, "online", NULL);
@@ -400,15 +461,18 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 								// g_hash_table_replace(ya->one_to_ones_rev, g_strdup(user), g_strdup(group));
 							// }
 						} else {
-							//TODO check we didn't send this
-							const gchar *other_user = g_hash_table_lookup(ya->one_to_ones, group);
-							//TODO null check
-							PurpleConversation *conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, other_user, ya->account);
-							
-							if (conv == NULL) {
-								conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, ya->account, other_user);
+							//check we didn't send this
+							const gchar *itemId = json_object_get_string_member(obj, "itemId");
+							if (!g_hash_table_remove(ya->sent_message_ids, itemId)) {
+								const gchar *other_user = g_hash_table_lookup(ya->one_to_ones, group);
+								//TODO null check
+								PurpleConversation *conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, other_user, ya->account);
+								
+								if (conv == NULL) {
+									conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, ya->account, other_user);
+								}
+								purple_conversation_write(conv, other_user, message, msg_flags, timestamp);
 							}
-							purple_conversation_write(conv, other_user, message, msg_flags, timestamp);
 						}
 					}
 					
@@ -416,10 +480,17 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 				}
 			}
 		}
-	} else if (purple_strequal(json_object_get_string_member(obj, "msg"), "SyncBatch")) {
+	} else if (purple_strequal(msg, "SyncBatch")) {
 		response = json_object_new();
 		json_object_set_string_member(response, "msg", "SyncAck");
 		json_object_set_string_member(response, "pushId", json_object_get_string_member(obj, "pushId"));
+	} else if (purple_strequal(msg, "MutationResponse")) {
+		
+		json_array_foreach_element_reverse(json_object_get_array_member(obj, "ops"), yahoo_process_mutation_op, ya);
+		
+		response = json_object_new();
+		json_object_set_string_member(response, "msg", "MutationResponseAck");
+		json_object_set_string_member(response, "ackId", json_object_get_string_member(obj, "ackId"));
 	}
 	
 	yahoo_socket_write_json(ya, response);
@@ -524,6 +595,7 @@ yahoo_login(PurpleAccount *account)
 	ya->one_to_ones = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	ya->one_to_ones_rev = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	ya->group_chats = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+	ya->sent_message_ids = g_hash_table_new_full(g_str_insensitive_hash, g_str_insensitive_equal, g_free, NULL);
 	
 	purple_util_fetch_url_request_len_with_account(account, preauth_url->str, FALSE, YAHOO_USERAGENT, FALSE, NULL, TRUE, 6553500, yahoo_preauth_callback, ya);
 	
@@ -548,6 +620,8 @@ yahoo_close(PurpleConnection *pc)
 	g_hash_table_unref(ya->one_to_ones_rev);
 	g_hash_table_remove_all(ya->group_chats);
 	g_hash_table_unref(ya->group_chats);
+	g_hash_table_remove_all(ya->sent_message_ids);
+	g_hash_table_unref(ya->sent_message_ids);
 	
 	g_hash_table_destroy(ya->cookie_table); ya->cookie_table = NULL;
 	g_free(ya->frame); ya->frame = NULL;
@@ -975,6 +1049,7 @@ yahoo_conversation_send_message(YahooAccount *ya, const gchar *groupId, const gc
 {
 	JsonObject *data = json_object_new();
 	gchar *stripped;
+	gchar *itemId;
 	
 	json_object_set_string_member(data, "msg", "InsertItem");
 	json_object_set_string_member(data, "groupId", groupId);
@@ -984,8 +1059,10 @@ yahoo_conversation_send_message(YahooAccount *ya, const gchar *groupId, const gc
 	json_object_set_string_member(data, "message", stripped);
 	g_free(stripped);
 	
-	//TODO
-	json_object_set_string_member(data, "itemId", g_strdup_printf("%012XFFFF", g_random_int())); //TODO leaky
+	itemId = g_strdup_printf("%012XFFFF", g_random_int());
+	g_hash_table_replace(ya->sent_message_ids, itemId, NULL);
+	json_object_set_string_member(data, "itemId", itemId);
+	
 	json_object_set_int_member(data, "expectedMediaCount", 0);
 	
 	yahoo_socket_write_json(ya, data);
