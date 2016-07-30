@@ -1,3 +1,21 @@
+/*
+ *   FunYahoo++ - A replacement Yahoo prpl for Pidgin
+ *   Copyright (C) 2016  Eion Robb
+ *
+ *   This program is free software: you can redistribute it and/or modify
+ *   it under the terms of the GNU General Public License as published by
+ *   the Free Software Foundation, either version 3 of the License, or
+ *   (at your option) any later version.
+ *
+ *   This program is distributed in the hope that it will be useful,
+ *   but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ *   GNU General Public License for more details.
+ *
+ *   You should have received a copy of the GNU General Public License
+ *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #ifndef PURPLE_PLUGINS
 #	define PURPLE_PLUGINS
 #endif
@@ -69,6 +87,29 @@ json_array_foreach_element_reverse (JsonArray        *array,
 
 #define YAHOO_BUFFER_DEFAULT_SIZE 40960
 
+
+
+// Purple2 compat functions
+#if !PURPLE_VERSION_CHECK(3, 0, 0)
+
+#define purple_blist_find_group        purple_find_group
+#define PurpleProtocolChatEntry  struct proto_chat_entry
+#define PurpleChatConversation             PurpleConvChat
+#define PurpleIMConversation               PurpleConvIm
+#define purple_conversations_find_chat_with_account(id, account) \
+		PURPLE_CONV_CHAT(purple_find_conversation_with_account(PURPLE_CONV_TYPE_CHAT, id, account))
+#define purple_chat_conversation_has_left     purple_conv_chat_has_left
+#define PURPLE_CONVERSATION(chatorim)         (chatorim == NULL ? NULL : chatorim->conv)
+#define PURPLE_IM_CONVERSATION(conv)          PURPLE_CONV_IM(conv)
+#define PURPLE_CHAT_CONVERSATION(conv)        PURPLE_CONV_CHAT(conv)
+#define purple_serv_got_joined_chat(pc, id, name)  PURPLE_CONV_CHAT(serv_got_joined_chat(pc, id, name))
+#define purple_conversations_find_chat(pc, id)  PURPLE_CONV_CHAT(purple_find_chat(pc, id))
+#define purple_serv_got_chat_in                    serv_got_chat_in
+
+
+#endif
+
+
 typedef struct {
 	PurpleAccount *account;
 	PurpleConnection *pc;
@@ -88,6 +129,7 @@ typedef struct {
 	gint64 seq;
 	gint64 ack;
 	gint64 opid;
+	gint64 last_event_timestamp;
 	
 	GHashTable *one_to_ones;     // A store of known groupId's->userId's
 	GHashTable *one_to_ones_rev; // A store of known userId's->groupId's
@@ -273,6 +315,7 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 }
 
 static void yahoo_socket_write_json(YahooAccount *ya, JsonObject *data);
+static GHashTable *yahoo_chat_info_defaults(PurpleConnection *pc, const char *chatname);
 
 static void
 yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpointer user_data)
@@ -317,8 +360,23 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 					g_hash_table_replace(ya->one_to_ones, g_strdup(groupId), g_strdup(otherUser));
 					g_hash_table_replace(ya->one_to_ones_rev, g_strdup(otherUser), g_strdup(groupId));
 				} else {
-					// This is a group chat - TODO
+					PurpleChat *chat = purple_blist_find_chat(ya->account, groupId);
+					const gchar *name = json_object_get_string_member(obj, "name");
+					
+					// This is a group chat
 					g_hash_table_replace(ya->group_chats, g_strdup(groupId), NULL);
+					
+					if (chat == NULL) {
+						if (yahoo_group == NULL) {
+							yahoo_group = purple_blist_find_group(_("Yahoo"));
+							if (!yahoo_group)
+							{
+								yahoo_group = purple_group_new(_("Yahoo"));
+								purple_blist_add_group(yahoo_group, NULL);
+							}
+						}
+						purple_blist_add_chat(purple_chat_new(ya->account, name?name:groupId, yahoo_chat_info_defaults(ya->pc, groupId)), yahoo_group, NULL);
+					}
 				}
 				
 			} else {
@@ -330,16 +388,17 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 					PurpleMessageFlags msg_flags = (purple_strequal(user, ya->self_user) ? PURPLE_MESSAGE_SEND : PURPLE_MESSAGE_RECV);
 					
 					if (g_hash_table_contains(ya->group_chats, group)) {
-						//TODO group chat message
+						//Group chat message
+						serv_got_chat_in(ya->pc, g_str_hash(group), user, msg_flags, message, timestamp);
 					} else {
 						if (msg_flags == PURPLE_MESSAGE_RECV) {
 							serv_got_im(ya->pc, user, message, msg_flags, timestamp);
 							
 							//sometimes we get chat messages before we get the list of groups
-							if (!g_hash_table_contains(ya->one_to_ones, group)) {
-								g_hash_table_replace(ya->one_to_ones, g_strdup(group), g_strdup(user));
-								g_hash_table_replace(ya->one_to_ones_rev, g_strdup(user), g_strdup(group));
-							}
+							// if (!g_hash_table_contains(ya->one_to_ones, group)) {
+								// g_hash_table_replace(ya->one_to_ones, g_strdup(group), g_strdup(user));
+								// g_hash_table_replace(ya->one_to_ones_rev, g_strdup(user), g_strdup(group));
+							// }
 						} else {
 							//TODO check we didn't send this
 							const gchar *other_user = g_hash_table_lookup(ya->one_to_ones, group);
@@ -456,6 +515,12 @@ yahoo_login(PurpleAccount *account)
 	ya->cookie_table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	ya->seq = 1;
 	
+	ya->last_event_timestamp = purple_account_get_int(ya->account, "last_event_timestamp_high", 0);
+	if (ya->last_event_timestamp != 0) {
+		ya->last_event_timestamp = (ya->last_event_timestamp << 32) | ((guint64) purple_account_get_int(ya->account, "last_event_timestamp_low", 0) & 0xFFFFFFFF);
+		ya->last_event_timestamp = ya->last_event_timestamp;
+	}
+	
 	ya->one_to_ones = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	ya->one_to_ones_rev = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	ya->group_chats = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
@@ -529,6 +594,7 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 		guint64 seq = json_object_get_int_member(message, "seq");
 		//guint64 ack = json_object_get_int_member(message, "ack");
 		JsonArray *data = json_object_get_array_member(message, "data");
+		gint64 current_server_time = json_object_get_int_member(message, "time");
 		
 		//ya->seq = ack;
 		if (json_array_get_length(data)) {
@@ -541,6 +607,10 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 			json_array_foreach_element_reverse(json_array_get_array_element(data, 0), yahoo_process_msg, ya);
 		}
 		
+		if (current_server_time) {
+			purple_account_set_int(ya->account, "last_event_timestamp_high", current_server_time >> 32);
+			purple_account_set_int(ya->account, "last_event_timestamp_low", current_server_time & 0xFFFFFFFF);
+		}
 	}
 	
 	g_object_unref(parser);
@@ -831,17 +901,83 @@ yahoo_start_socket(YahooAccount *ya)
 
 
 
+static GList *
+yahoo_chat_info(PurpleConnection *pc)
+{
+	GList *m = NULL;
+	PurpleProtocolChatEntry *pce;
 
-static int 
-yahoo_send_im(PurpleConnection *pc, const gchar *who, const gchar *message, PurpleMessageFlags flags)
+	pce = g_new0(PurpleProtocolChatEntry, 1);
+	pce->label = _("Group ID");
+	pce->identifier = "groupId";
+	pce->required = TRUE;
+	m = g_list_append(m, pce);
+	
+	return m;
+}
+
+static GHashTable *
+yahoo_chat_info_defaults(PurpleConnection *pc, const char *chatname)
+{
+	GHashTable *defaults = g_hash_table_new_full(g_str_hash, g_str_equal, NULL, g_free);
+	
+	if (chatname != NULL)
+	{
+		g_hash_table_insert(defaults, "groupId", g_strdup(chatname));
+	}
+	
+	return defaults;
+}
+
+static gchar *
+yahoo_get_chat_name(GHashTable *data)
+{
+	gchar *temp;
+
+	if (data == NULL)
+		return NULL;
+	
+	temp = g_hash_table_lookup(data, "groupId");
+
+	if (temp == NULL)
+		return NULL;
+
+	return g_strdup(temp);
+}
+
+static void
+yahoo_join_chat(PurpleConnection *pc, GHashTable *data)
+{
+	YahooAccount *ya = purple_connection_get_protocol_data(pc);
+	gchar *groupId;
+	PurpleChatConversation *chatconv;
+	
+	groupId = (gchar *)g_hash_table_lookup(data, "groupId");
+	if (groupId == NULL)
+	{
+		return;
+	}
+	
+	chatconv = purple_conversations_find_chat_with_account(groupId, ya->account);
+	if (chatconv != NULL && !purple_chat_conversation_has_left(chatconv)) {
+		purple_conversation_present(PURPLE_CONVERSATION(chatconv));
+		return;
+	}
+	
+	chatconv = purple_serv_got_joined_chat(pc, g_str_hash(groupId), groupId);
+	purple_conversation_set_data(PURPLE_CONVERSATION(chatconv), "groupId", g_strdup(groupId));
+	
+	purple_conversation_present(PURPLE_CONVERSATION(chatconv));
+}
+
+static gint
+yahoo_conversation_send_message(YahooAccount *ya, const gchar *groupId, const gchar *message)
 {
 	JsonObject *data = json_object_new();
-	YahooAccount *ya = pc->proto_data;
 	gchar *stripped;
-	gchar *group_id = g_hash_table_lookup(ya->one_to_ones_rev, who);
 	
 	json_object_set_string_member(data, "msg", "InsertItem");
-	json_object_set_string_member(data, "groupId", group_id);
+	json_object_set_string_member(data, "groupId", groupId);
 	json_object_set_int_member(data, "opId", ya->opid++);
 	
 	stripped = g_strstrip(purple_markup_strip_html(message));
@@ -852,10 +988,52 @@ yahoo_send_im(PurpleConnection *pc, const gchar *who, const gchar *message, Purp
 	json_object_set_string_member(data, "itemId", g_strdup_printf("%012XFFFF", g_random_int())); //TODO leaky
 	json_object_set_int_member(data, "expectedMediaCount", 0);
 	
-	
 	yahoo_socket_write_json(ya, data);
 	
 	return 1;
+}
+
+static gint
+yahoo_chat_send(PurpleConnection *pc, gint id, 
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+PurpleMessage *msg)
+{
+	const gchar *message = purple_message_get_contents(msg);
+#else
+const gchar *message, PurpleMessageFlags flags)
+{
+#endif
+	
+	YahooAccount *ya;
+	const gchar *groupId;
+	PurpleChatConversation *chatconv;
+	gint ret;
+	
+	ya = purple_connection_get_protocol_data(pc);
+	chatconv = purple_conversations_find_chat(pc, id);
+	groupId = purple_conversation_get_data(PURPLE_CONVERSATION(chatconv), "groupId");
+	if (!groupId) {
+		// Fix for a race condition around the chat data and serv_got_joined_chat()
+		groupId = purple_conversation_get_name(PURPLE_CONVERSATION(chatconv));
+		g_return_val_if_fail(groupId, -1);
+	}
+	g_return_val_if_fail(g_hash_table_contains(ya->group_chats, groupId), -1);
+	
+	ret = yahoo_conversation_send_message(ya, groupId, message);
+	if (ret > 0) {
+		purple_serv_got_chat_in(pc, g_str_hash(groupId), ya->self_user, PURPLE_MESSAGE_SEND, message, time(NULL));
+	}
+	return ret;
+}
+
+
+static int 
+yahoo_send_im(PurpleConnection *pc, const gchar *who, const gchar *message, PurpleMessageFlags flags)
+{
+	YahooAccount *ya = pc->proto_data;
+	gchar *group_id = g_hash_table_lookup(ya->one_to_ones_rev, who);
+	
+	return yahoo_conversation_send_message(ya, group_id, message);
 }
 
 
@@ -921,8 +1099,8 @@ PurplePluginProtocolInfo prpl_info = {
 	NULL,                /* tooltip_text */
 	yahoo_status_types,  /* status_types */
 	NULL/*mt_node_menu*/,        /* blist_node_menu */
-	NULL,                /* chat_info */
-	NULL,                /* chat_info_defaults */
+	yahoo_chat_info,     /* chat_info */
+	yahoo_chat_info_defaults, /* chat_info_defaults */
 	yahoo_login,         /* login */
 	yahoo_close,         /* close */
 	yahoo_send_im,       /* send_im */
@@ -941,13 +1119,13 @@ PurplePluginProtocolInfo prpl_info = {
 	NULL,                /* rem_permit */
 	NULL,                /* rem_deny */
 	NULL,                /* set_permit_deny */
-	NULL,                /* join_chat */
+	yahoo_join_chat,     /* join_chat */
 	NULL,                /* reject chat invite */
-	NULL,                /* get_chat_name */
+	yahoo_get_chat_name, /* get_chat_name */
 	NULL,                /* chat_invite */
 	NULL,                /* chat_leave */
 	NULL,                /* chat_whisper */
-	NULL,                /* chat_send */
+	yahoo_chat_send,     /* chat_send */
 	NULL/*mt_keepalive*/,        /* keepalive */
 	NULL,                /* register_user */
 	NULL,                /* get_cb_info */
