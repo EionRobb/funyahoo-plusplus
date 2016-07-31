@@ -391,6 +391,11 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 	JsonObject *obj = json_node_get_object(element_node);
 	PurpleGroup *yahoo_group = NULL;
 	const gchar *msg = json_object_get_string_member(obj, "msg");
+	gint64 createdTime = json_object_get_int_member(obj, "createdTime");
+	
+	if (createdTime != 0 && createdTime < ya->last_event_timestamp) {
+		return;
+	}
 	
 	if (purple_strequal(msg, "NewEntity")) {
 		JsonArray *key_array = json_object_get_array_member(obj, "key");
@@ -464,7 +469,7 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 					gchar *message = purple_markup_escape_text(json_object_get_string_member(obj, "message"), -1);
 					const gchar *user = json_array_get_string_element(json_object_get_array_member(obj, "user"), 1);
 					const gchar *group = json_array_get_string_element(json_object_get_array_member(obj, "group"), 1);
-					gint64 timestamp = json_object_get_int_member(obj, "createdTime") / 1000;
+					gint64 timestamp = createdTime / 1000;
 					PurpleMessageFlags msg_flags = (purple_strequal(user, ya->self_user) ? PURPLE_MESSAGE_SEND : PURPLE_MESSAGE_RECV);
 					const gchar *itemId = json_object_get_string_member(obj, "itemId");
 					
@@ -472,6 +477,12 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 					if (msg_flags == PURPLE_MESSAGE_RECV || !g_hash_table_remove(ya->sent_message_ids, itemId)) {
 						if (g_hash_table_contains(ya->group_chats, group)) {
 							//Group chat message
+							PurpleChatConversation *chatconv = purple_conversations_find_chat_with_account(group, ya->account);
+							if (chatconv == NULL) {
+								chatconv = purple_serv_got_joined_chat(ya->pc, g_str_hash(group), group);
+								purple_conversation_set_data(PURPLE_CONVERSATION(chatconv), "group", g_strdup(group));
+							}
+							
 							serv_got_chat_in(ya->pc, g_str_hash(group), user, msg_flags, message, timestamp);
 						} else {
 							if (msg_flags == PURPLE_MESSAGE_RECV) {
@@ -792,6 +803,7 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 		if (current_server_time) {
 			purple_account_set_int(ya->account, "last_event_timestamp_high", current_server_time >> 32);
 			purple_account_set_int(ya->account, "last_event_timestamp_low", current_server_time & 0xFFFFFFFF);
+			ya->last_event_timestamp = current_server_time;
 		}
 	}
 	
