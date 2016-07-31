@@ -91,6 +91,7 @@ json_array_foreach_element_reverse (JsonArray        *array,
 
 #include <accountopt.h>
 #include <core.h>
+#include <cmds.h>
 #include <debug.h>
 #include <prpl.h>
 #include <request.h>
@@ -101,6 +102,7 @@ json_array_foreach_element_reverse (JsonArray        *array,
 #	define _(a) (a)
 #endif
 
+#define YAHOO_PLUGIN_ID "prpl-eionrobb-funyahoo-plusplus"
 #define YAHOO_USERAGENT "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36"
 
 #define YAHOO_BUFFER_DEFAULT_SIZE 40960
@@ -124,9 +126,16 @@ json_array_foreach_element_reverse (JsonArray        *array,
 #define purple_conversations_find_chat(pc, id)  PURPLE_CONV_CHAT(purple_find_chat(pc, id))
 #define purple_serv_got_chat_in                    serv_got_chat_in
 #define purple_chat_conversation_add_user     purple_conv_chat_add_user
+#define purple_chat_conversation_remove_user  purple_conv_chat_remove_user
 #define PurpleChatUserFlags  PurpleConvChatBuddyFlags
 #define PURPLE_CHAT_USER_NONE     PURPLE_CBFLAGS_NONE
 #define PURPLE_CHAT_USER_OP       PURPLE_CBFLAGS_OP
+#define purple_conversation_get_connection      purple_conversation_get_gc
+#define purple_chat_conversation_get_id         purple_conv_chat_get_id
+#define PURPLE_CMD_FLAG_PROTOCOL_ONLY  PURPLE_CMD_FLAG_PRPL_ONLY
+#define PURPLE_IS_BUDDY                PURPLE_BLIST_NODE_IS_BUDDY
+#define PURPLE_IS_CHAT                 PURPLE_BLIST_NODE_IS_CHAT
+#define purple_chat_get_name_only      purple_chat_get_name
 
 
 #endif
@@ -457,23 +466,23 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 					const gchar *group = json_array_get_string_element(json_object_get_array_member(obj, "group"), 1);
 					gint64 timestamp = json_object_get_int_member(obj, "createdTime") / 1000;
 					PurpleMessageFlags msg_flags = (purple_strequal(user, ya->self_user) ? PURPLE_MESSAGE_SEND : PURPLE_MESSAGE_RECV);
+					const gchar *itemId = json_object_get_string_member(obj, "itemId");
 					
-					if (g_hash_table_contains(ya->group_chats, group)) {
-						//Group chat message
-						serv_got_chat_in(ya->pc, g_str_hash(group), user, msg_flags, message, timestamp);
-					} else {
-						if (msg_flags == PURPLE_MESSAGE_RECV) {
-							serv_got_im(ya->pc, user, message, msg_flags, timestamp);
-							
-							//sometimes we get chat messages before we get the list of groups
-							// if (!g_hash_table_contains(ya->one_to_ones, group)) {
-								// g_hash_table_replace(ya->one_to_ones, g_strdup(group), g_strdup(user));
-								// g_hash_table_replace(ya->one_to_ones_rev, g_strdup(user), g_strdup(group));
-							// }
+					//check we didn't send this
+					if (msg_flags == PURPLE_MESSAGE_RECV || !g_hash_table_remove(ya->sent_message_ids, itemId)) {
+						if (g_hash_table_contains(ya->group_chats, group)) {
+							//Group chat message
+							serv_got_chat_in(ya->pc, g_str_hash(group), user, msg_flags, message, timestamp);
 						} else {
-							//check we didn't send this
-							const gchar *itemId = json_object_get_string_member(obj, "itemId");
-							if (!g_hash_table_remove(ya->sent_message_ids, itemId)) {
+							if (msg_flags == PURPLE_MESSAGE_RECV) {
+								serv_got_im(ya->pc, user, message, msg_flags, timestamp);
+								
+								//sometimes we get chat messages before we get the list of groups
+								// if (!g_hash_table_contains(ya->one_to_ones, group)) {
+									// g_hash_table_replace(ya->one_to_ones, g_strdup(group), g_strdup(user));
+									// g_hash_table_replace(ya->one_to_ones_rev, g_strdup(user), g_strdup(group));
+								// }
+							} else {
 								const gchar *other_user = g_hash_table_lookup(ya->one_to_ones, group);
 								//TODO null check
 								PurpleConversation *conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, other_user, ya->account);
@@ -505,6 +514,15 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 						
 						if (chatconv != NULL) {
 							purple_chat_conversation_add_user(chatconv, userId, message, cbflags, TRUE);
+						}
+					} else if (purple_strequal(json_object_get_string_member(obj, "type"), "memberRemoved")) {
+						const gchar *message = NULL; //"%s left the room."
+						const gchar *groupId = json_array_get_string_element(json_object_get_array_member(obj, "group"), 1);
+						const gchar *userId = json_array_get_string_element(json_object_get_array_member(obj, "user"), 1);
+						PurpleChatConversation *chatconv = purple_conversations_find_chat_with_account(groupId, ya->account);
+						
+						if (chatconv != NULL) {
+							purple_chat_conversation_remove_user(chatconv, userId, message);
 						}
 					}
 				}
@@ -651,6 +669,9 @@ yahoo_build_groups_from_blist(YahooAccount *ya)
 	}
 }
 
+
+static void yahoo_blist_node_removed(PurpleBlistNode *node);
+
 void
 yahoo_login(PurpleAccount *account)
 {
@@ -685,6 +706,8 @@ yahoo_login(PurpleAccount *account)
 	
 	//Build the initial hash tables from the current buddy list
 	yahoo_build_groups_from_blist(ya);
+	
+	purple_signal_connect(purple_blist_get_handle(), "blist-node-removed", account, PURPLE_CALLBACK(yahoo_blist_node_removed), NULL);
 }
 
 
@@ -1092,7 +1115,35 @@ yahoo_unblock_user(PurpleConnection *pc, const char *who)
 	yahoo_socket_write_json(ya, data);
 }
 
+static void
+yahoo_chat_leave_by_group_id(PurpleConnection *pc, const gchar *groupId)
+{
+	YahooAccount *ya;
+	JsonObject *data = json_object_new();
+	
+	ya = purple_connection_get_protocol_data(pc);
+	
+	json_object_set_string_member(data, "msg", "LeaveGroup");
+	json_object_set_string_member(data, "groupId", groupId);
+	json_object_set_int_member(data, "opId", ya->opid++);
+	
+	yahoo_socket_write_json(ya, data);
+}
 
+static void
+yahoo_chat_leave(PurpleConnection *pc, int id)
+{
+	const gchar *groupId = NULL;
+	PurpleChatConversation *chatconv;
+	
+	chatconv = purple_conversations_find_chat(pc, id);
+	groupId = purple_conversation_get_data(PURPLE_CONVERSATION(chatconv), "groupId");
+	if (groupId == NULL) {
+		groupId = purple_conversation_get_name(PURPLE_CONVERSATION(chatconv));
+	}
+	
+	yahoo_chat_leave_by_group_id(pc, groupId);
+}
 
 static void
 yahoo_chat_invite(PurpleConnection *pc, int id, const char *message, const char *who)
@@ -1277,9 +1328,69 @@ yahoo_status_types(PurpleAccount *account)
 	return types;
 }
 
+static void
+yahoo_blist_node_removed(PurpleBlistNode *node)
+{
+	PurpleChat *chat = NULL;
+	PurpleAccount *account = NULL;
+	PurpleConnection *pc;
+	const gchar *groupId;
+	GHashTable *components;
+	
+	if (PURPLE_IS_CHAT(node)) {
+		chat = PURPLE_CHAT(node);
+		account = purple_chat_get_account(chat);
+	}
+	
+	if (account == NULL) {
+		return;
+	}
+	
+	if (g_strcmp0(purple_account_get_protocol_id(account), YAHOO_PLUGIN_ID)) {
+		return;
+	}
+	
+	pc = purple_account_get_connection(account);
+	if (pc == NULL) {
+		return;
+	}
+	
+	if (chat != NULL) {
+		components = purple_chat_get_components(chat);
+		groupId = g_hash_table_lookup(components, "groupId");
+		if (groupId == NULL) {
+			groupId = purple_chat_get_name_only(chat);
+		}
+		
+		yahoo_chat_leave_by_group_id(pc, groupId);
+	}
+}
+
+static PurpleCmdRet
+yahoo_cmd_leave(PurpleConversation *conv, const gchar *cmd, gchar **args, gchar **error, void *data)
+{
+	PurpleConnection *pc = NULL;
+	int id = -1;
+	
+	pc = purple_conversation_get_connection(conv);
+	id = purple_chat_conversation_get_id(PURPLE_CHAT_CONVERSATION(conv));
+	
+	if (pc == NULL || id == -1)
+		return PURPLE_CMD_RET_FAILED;
+	
+	yahoo_chat_leave(pc, id);
+	
+	return PURPLE_CMD_RET_OK;
+}
+
 static gboolean
 plugin_load(PurplePlugin *plugin)
 {
+	purple_cmd_register("leave", "", PURPLE_CMD_P_PLUGIN, PURPLE_CMD_FLAG_CHAT |
+						PURPLE_CMD_FLAG_PROTOCOL_ONLY | PURPLE_CMD_FLAG_ALLOW_WRONG_ARGS,
+						YAHOO_PLUGIN_ID, yahoo_cmd_leave,
+						_("leave:  Leave the group chat"), NULL);
+	
 	return TRUE;
 }
 
@@ -1400,7 +1511,7 @@ static PurplePluginInfo info = {
 	0, /* flags */
 	NULL, /* dependencies */
 	PURPLE_PRIORITY_DEFAULT, /* priority */
-	"prpl-eionrobb-funyahoo-plusplus", /* id */
+	YAHOO_PLUGIN_ID, /* id */
 	"Yahoo (2016)", /* name */
 	"1.0", /* version */
 	"", /* summary */
