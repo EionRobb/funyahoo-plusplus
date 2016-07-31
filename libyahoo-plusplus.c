@@ -166,7 +166,7 @@ typedef struct {
 	GHashTable *one_to_ones_rev; // A store of known userId's->groupId's
 	GHashTable *group_chats;     // A store of known multi-user groupId's
 	GHashTable *sent_message_ids;// A store of message id's that we generated from this instance
-	
+	GHashTable *media_urls;      // MediaId -> URL
 } YahooAccount;
 
 typedef void (*YahooProxyCallbackFunc)(YahooAccount *ya, JsonNode *node, gpointer user_data);
@@ -425,8 +425,22 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 				}
 				
 				purple_prpl_got_user_status(ya->account, userId, "online", NULL);
+				
+				if (json_object_has_member(obj, "picture")) {
+					const gchar *mediaId = json_array_get_string_element(json_object_get_array_member(obj, "picture"), 3);
+					const gchar *media_url = g_hash_table_lookup(ya->media_urls, mediaId);
+					
+					if (!purple_strequal(purple_buddy_icons_get_checksum_for_user(buddy), media_url)) {
+						//TODO
+						//yahoo_fetch_url(ya, url, NULL, yahoo_got_buddy_icon, buddy);
+					}
+				}
 			} else if (purple_strequal(subkey, "media")) {
-				// buddy icon at obj->resources[0]->url
+				const gchar *mediaId = json_array_get_string_element(key_array, 3);
+				const gchar *originalUrl = json_object_get_string_member(obj, "originalUrl");
+				
+				purple_debug_info("yahoo", "Received media id %s with url %s\n", mediaId, originalUrl);
+				g_hash_table_replace(ya->media_urls, g_strdup(mediaId), g_strdup(originalUrl));
 			}
 			
 		} else if (purple_strequal(key, "Group")) {
@@ -534,6 +548,41 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 						
 						if (chatconv != NULL) {
 							purple_chat_conversation_remove_user(chatconv, userId, message);
+						}
+					}
+				} else if (purple_strequal(subkey, "Item") && purple_strequal(json_array_get_string_element(key_array, 4), "media")) {
+					//TODO split this out for the regular message receive handling code
+					
+					// Received a message with a photo
+					JsonArray *media_array = json_object_get_array_member(obj, "media");
+					const gchar *mediaId = json_array_get_string_element(media_array, 3);
+					const gchar *media_url = g_hash_table_lookup(ya->media_urls, mediaId);
+					const gchar *userId = json_array_get_string_element(media_array, 1);
+					const gchar *groupId = json_array_get_string_element(json_object_get_array_member(obj, "group"), 1);
+					gint64 timestamp = createdTime / 1000;
+					PurpleMessageFlags msg_flags = (purple_strequal(userId, ya->self_user) ? PURPLE_MESSAGE_SEND : PURPLE_MESSAGE_RECV);
+
+					if (g_hash_table_contains(ya->group_chats, groupId)) {
+						//Group chat message
+						PurpleChatConversation *chatconv = purple_conversations_find_chat_with_account(groupId, ya->account);
+						if (chatconv == NULL) {
+							chatconv = purple_serv_got_joined_chat(ya->pc, g_str_hash(groupId), groupId);
+							purple_conversation_set_data(PURPLE_CONVERSATION(chatconv), "groupId", g_strdup(groupId));
+						}
+						
+						serv_got_chat_in(ya->pc, g_str_hash(groupId), userId, msg_flags, media_url, timestamp);
+					} else {
+						if (msg_flags == PURPLE_MESSAGE_RECV) {
+							serv_got_im(ya->pc, userId, media_url, msg_flags, timestamp);
+						} else {
+							const gchar *other_user = g_hash_table_lookup(ya->one_to_ones, groupId);
+							//TODO null check
+							PurpleConversation *conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, other_user, ya->account);
+							
+							if (conv == NULL) {
+								conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, ya->account, other_user);
+							}
+							purple_conversation_write(conv, other_user, media_url, msg_flags, timestamp);
 						}
 					}
 				}
@@ -710,6 +759,7 @@ yahoo_login(PurpleAccount *account)
 	ya->one_to_ones_rev = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	ya->group_chats = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	ya->sent_message_ids = g_hash_table_new_full(g_str_insensitive_hash, g_str_insensitive_equal, g_free, NULL);
+	ya->media_urls = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	
 	purple_util_fetch_url_request_len_with_account(account, preauth_url->str, FALSE, YAHOO_USERAGENT, FALSE, NULL, TRUE, 6553500, yahoo_preauth_callback, ya);
 	
@@ -741,6 +791,8 @@ yahoo_close(PurpleConnection *pc)
 	g_hash_table_unref(ya->group_chats);
 	g_hash_table_remove_all(ya->sent_message_ids);
 	g_hash_table_unref(ya->sent_message_ids);
+	g_hash_table_remove_all(ya->media_urls);
+	g_hash_table_unref(ya->media_urls);
 	
 	g_hash_table_destroy(ya->cookie_table); ya->cookie_table = NULL;
 	g_free(ya->frame); ya->frame = NULL;
@@ -1434,7 +1486,7 @@ PurplePluginProtocolInfo prpl_info = {
 
 	NULL,                /* user_splits */
 	NULL,                /* protocol_options */
-	{"png,gif,jpeg", 0, 0, 96, 96, 0, PURPLE_ICON_SCALE_SEND}, /* icon_spec */
+	{"png,gif,jpeg", 0, 0, 96, 96, 0, PURPLE_ICON_SCALE_DISPLAY}, /* icon_spec */
 	yahoo_list_icon,    /* list_icon */
 	NULL,                /* list_emblem */
 	NULL,                /* status_text */
