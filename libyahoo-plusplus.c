@@ -1023,7 +1023,7 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 		}
 	}
 	
-	if ((done_some_reads == FALSE && read_len <= 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+	if ((done_some_reads == FALSE && read_len <= 0 && errno != EAGAIN && errno != EINTR)) {
 		purple_connection_error_reason(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Lost connection to server");
 	}
 }
