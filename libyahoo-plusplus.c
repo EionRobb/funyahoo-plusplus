@@ -621,8 +621,9 @@ static void
 yahoo_rpc_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 {
 	JsonObject *obj = json_node_get_object(node);
+	const gchar *msg = json_object_get_string_member(obj, "msg");
 	
-	if (purple_strequal(json_object_get_string_member(obj, "msg"), "SessionOpened")) {
+	if (purple_strequal(msg, "SessionOpened")) {
 		//connected
 		ya->session_token = g_strdup(json_object_get_string_member(obj, "sessionToken"));
 		ya->channel = g_strdup(json_object_get_string_member(obj, "channelId"));
@@ -635,6 +636,9 @@ yahoo_rpc_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 		json_array_foreach_element_reverse(json_object_get_array_member(obj, "batch"), yahoo_process_msg, ya);
 		
 		yahoo_start_socket(ya);
+	} else if (purple_strequal(msg, "UserMustActivate")) {
+		purple_notify_uri(ya->pc, "https://mail.yahoo.com/");
+		purple_connection_error(ya->pc, _("Please login to the Yahoo webmail first, to continue"));
 	} else {
 		purple_connection_error(ya->pc, json_object_get_string_member(obj, "reason"));
 	}
