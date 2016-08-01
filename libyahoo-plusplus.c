@@ -107,6 +107,7 @@ json_array_foreach_element_reverse (JsonArray        *array,
 
 #define YAHOO_BUFFER_DEFAULT_SIZE 40960
 
+#define YAHOO_PRETEND_VERSION "929"
 
 
 // Purple2 compat functions
@@ -639,6 +640,8 @@ yahoo_rpc_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 	} else if (purple_strequal(msg, "UserMustActivate")) {
 		purple_notify_uri(ya->pc, "https://mail.yahoo.com/");
 		purple_connection_error(ya->pc, _("Please login to the Yahoo webmail first, to continue"));
+	} else if (purple_strequal(msg, "InvalidCredentials")) {
+		purple_connection_error(ya->pc, "Session expired");
 	} else {
 		purple_connection_error(ya->pc, json_object_get_string_member(obj, "reason"));
 	}
@@ -656,9 +659,19 @@ yahoo_auth_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 			purple_connection_error(ya->pc, json_object_get_string_member(obj, "message"));
 		}
 	} else {
-		const gchar *rpcdata = "{\"msg\":\"OpenSession\",\"device\":{\"kind\":\"mobile\"},\"auth\":{\"provider\":\"signin\"},\"version\":{\"platform\":\"web\",\"app\":\"iris/dogfood\",\"appVersion\":897},\"batch\":[]}";
+		const gchar *rpcdata = "{\"msg\":\"OpenSession\",\"device\":{\"kind\":\"mobile\"},\"auth\":{\"provider\":\"signin\"},\"version\":{\"platform\":\"web\",\"app\":\"iris/dogfood\",\"appVersion\":" YAHOO_PRETEND_VERSION "},\"batch\":[]}";
 		yahoo_fetch_url(ya, "https://prod.iris.yahoo.com/prod/rpc?wait=1&v=1", rpcdata, yahoo_rpc_callback, NULL);
 	}
+}
+
+static void
+yahoo_restart_channel(YahooAccount *ya)
+{
+	gchar *rpcdata = g_strdup_printf("{\"msg\":\"ReopenSession\",\"sessionToken\":\"%s\",\"batch\":[],\"version\":{\"platform\":\"web\",\"app\":\"iris/dogfood\",\"appVersion\":" YAHOO_PRETEND_VERSION "}}", ya->session_token);
+	
+	yahoo_fetch_url(ya, "https://prod.iris.yahoo.com/prod/rpc?wait=1&v=1", rpcdata, yahoo_rpc_callback, NULL);
+	
+	g_free(rpcdata);
 }
 
 static void
@@ -752,6 +765,7 @@ yahoo_login(PurpleAccount *account)
 	ya->account = account;
 	ya->pc = pc;
 	ya->cookie_table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+	ya->ack = 1;
 	ya->seq = 1;
 	
 	ya->last_event_timestamp = purple_account_get_int(ya->account, "last_event_timestamp_high", 0);
@@ -840,26 +854,40 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 	
 	if (root != NULL) {
 		JsonObject *message = json_node_get_object(root);
-		guint64 seq = json_object_get_int_member(message, "seq");
-		//guint64 ack = json_object_get_int_member(message, "ack");
-		JsonArray *data = json_object_get_array_member(message, "data");
-		gint64 current_server_time = json_object_get_int_member(message, "time");
-		
-		//ya->seq = ack;
-		if (json_array_get_length(data)) {
-			ya->ack = seq + 1;
+		if (G_UNLIKELY(json_object_has_member(message, "msg"))) {
+			const gchar *msg = json_object_get_string_member(message, "msg");
+			
+			if (purple_strequal(msg, "ChannelNotFound")) {
+				purple_ssl_close(ya->websocket);
+				ya->websocket = NULL;
+				
+				yahoo_restart_channel(ya);
+			} else if (purple_strequal(msg, "InvalidCredentials")) {
+				purple_connection_error(ya->pc, "Session expired");
+			}
+			
 		} else {
-			ya->ack = seq;
-		}
-		
-		if (data && json_array_get_length(data)) {
-			json_array_foreach_element_reverse(json_array_get_array_element(data, 0), yahoo_process_msg, ya);
-		}
-		
-		if (current_server_time) {
-			purple_account_set_int(ya->account, "last_event_timestamp_high", current_server_time >> 32);
-			purple_account_set_int(ya->account, "last_event_timestamp_low", current_server_time & 0xFFFFFFFF);
-			ya->last_event_timestamp = current_server_time;
+			guint64 seq = json_object_get_int_member(message, "seq");
+			//guint64 ack = json_object_get_int_member(message, "ack");
+			JsonArray *data = json_object_get_array_member(message, "data");
+			gint64 current_server_time = json_object_get_int_member(message, "time");
+			
+			//ya->seq = ack;
+			if (json_array_get_length(data)) {
+				ya->ack = seq + 1;
+			} else {
+				ya->ack = seq;
+			}
+			
+			if (data && json_array_get_length(data)) {
+				json_array_foreach_element_reverse(json_array_get_array_element(data, 0), yahoo_process_msg, ya);
+			}
+			
+			if (current_server_time) {
+				purple_account_set_int(ya->account, "last_event_timestamp_high", current_server_time >> 32);
+				purple_account_set_int(ya->account, "last_event_timestamp_low", current_server_time & 0xFFFFFFFF);
+				ya->last_event_timestamp = current_server_time;
+			}
 		}
 	}
 	
@@ -1018,9 +1046,8 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 					ya->websocket = NULL;
 					ya->websocket_header_received = FALSE;
 					
-					// revert to polling
-					//yahoo_start_polling(ya);
-					purple_connection_error(ya->pc, "Websocket closed");
+					// Try reconnect
+					yahoo_start_socket(ya);
 					
 					return;
 				} else if (ya->packet_code == 137) {
@@ -1078,7 +1105,7 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 			if (read_len > 0) {
 				ya->frame_len_progress += read_len;
 			}
-		} while (read_len > 0);
+		} while (read_len > 0 && ya->frame_len - ya->frame_len_progress > 0);
 		done_some_reads = TRUE;
 		
 		if (ya->frame_len_progress == ya->frame_len) {
@@ -1086,13 +1113,19 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 			g_free(ya->frame); ya->frame = NULL;
 			ya->packet_code = 0;
 			ya->frame_len = 0;
+			
+			if (G_UNLIKELY(ya->websocket == NULL)) {
+				return;
+			}
 		} else {
 			return;
 		}
 	}
 	
 	if ((done_some_reads == FALSE && read_len <= 0 && errno != EAGAIN && errno != EINTR)) {
-		purple_connection_error_reason(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Lost connection to server");
+		//purple_connection_error_reason(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Lost connection to server");
+		// Try reconnect
+		yahoo_start_socket(ya);
 	}
 }
 
@@ -1109,7 +1142,7 @@ yahoo_socket_connected(gpointer userdata, PurpleSslConnection *conn, PurpleInput
 	
 	g_string_append_printf(url, "session-token=%s&", ya->session_token);
 	g_string_append_printf(url, "channel=%s&", ya->channel);
-	g_string_append(url, "ack=1&");
+	g_string_append_printf(url, "ack=%" G_GINT64_FORMAT "&", ya->ack);
 	g_string_append(url, "v=1&");
 	
 	cookies = yahoo_cookies_to_string(ya);
@@ -1142,13 +1175,19 @@ yahoo_socket_failed(PurpleSslConnection *conn, PurpleSslErrorType errortype, gpo
 	ya->websocket = NULL;
 	ya->websocket_header_received = FALSE;
 	
-	// revert to polling
-	//yahoo_start_polling(ya);
+	yahoo_restart_channel(ya);
 }
 
 static void
 yahoo_start_socket(YahooAccount *ya)
 {
+	//Reset all the old stuff
+	ya->websocket = NULL;
+	ya->websocket_header_received = FALSE;
+	g_free(ya->frame); ya->frame = NULL;
+	ya->packet_code = 0;
+	ya->frame_len = 0;
+			
 	ya->websocket = purple_ssl_connect(ya->account, "prod.iris.yahoo.com", 443, yahoo_socket_connected, yahoo_socket_failed, ya);
 }
 
