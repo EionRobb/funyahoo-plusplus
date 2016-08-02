@@ -16,10 +16,6 @@
  *   along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef PURPLE_PLUGINS
-#	define PURPLE_PLUGINS
-#endif
-
 // Glib
 #include <glib.h>
 
@@ -89,20 +85,24 @@ json_array_foreach_element_reverse (JsonArray        *array,
 }
 
 
-#include <accountopt.h>
-#include <core.h>
-#include <cmds.h>
-#include <debug.h>
-#include <prpl.h>
-#include <request.h>
-#include <version.h>
+#include <purple.h>
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+#include <http.h>
+#endif
 
+#ifndef PURPLE_PLUGINS
+#	define PURPLE_PLUGINS
+#endif
 
 #ifndef _
 #	define _(a) (a)
+#	define N_(a) (a)
 #endif
 
 #define YAHOO_PLUGIN_ID "prpl-eionrobb-funyahoo-plusplus"
+#define YAHOO_PLUGIN_VERSION "0.9"
+#define YAHOO_PLUGIN_WEBSITE "https://github.com/EionRobb/funyahoo-plusplus"
+
 #define YAHOO_USERAGENT "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36"
 
 #define YAHOO_BUFFER_DEFAULT_SIZE 40960
@@ -113,6 +113,9 @@ json_array_foreach_element_reverse (JsonArray        *array,
 // Purple2 compat functions
 #if !PURPLE_VERSION_CHECK(3, 0, 0)
 
+#define purple_connection_error                 purple_connection_error_reason
+#define PURPLE_CONNECTION_CONNECTING       PURPLE_CONNECTING
+#define PURPLE_CONNECTION_CONNECTED        PURPLE_CONNECTED
 #define purple_blist_find_group        purple_find_group
 #define PurpleProtocolChatEntry  struct proto_chat_entry
 #define PurpleChatConversation             PurpleConvChat
@@ -137,8 +140,47 @@ json_array_foreach_element_reverse (JsonArray        *array,
 #define PURPLE_IS_BUDDY                PURPLE_BLIST_NODE_IS_BUDDY
 #define PURPLE_IS_CHAT                 PURPLE_BLIST_NODE_IS_CHAT
 #define purple_chat_get_name_only      purple_chat_get_name
+#define purple_blist_find_buddy        purple_find_buddy
+#define purple_serv_got_alias                      serv_got_alias
+#define purple_account_set_private_alias    purple_account_set_alias
+#define purple_account_get_private_alias    purple_account_get_alias
+#define purple_protocol_got_user_status		purple_prpl_got_user_status
+#define purple_serv_got_im                         serv_got_im
+#define purple_conversations_find_im_with_account(name, account)  \
+		PURPLE_CONV_IM(purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, name, account))
+#define purple_im_conversation_new(account, from) PURPLE_CONV_IM(purple_conversation_new(PURPLE_CONV_TYPE_IM, account, from))
+#define PurpleMessage  PurpleConvMessage
+#define purple_message_set_time(msg, time)  ((msg)->when = (time))
+#define purple_conversation_write_message(conv, msg)  purple_conversation_write(conv, msg->who, msg->what, msg->flags, msg->when)
+static inline PurpleMessage *
+purple_message_new_outgoing(const gchar *who, const gchar *contents, PurpleMessageFlags flags)
+{
+	PurpleMessage *message = g_new0(PurpleMessage, 1);
+	
+	message->who = g_strdup(who);
+	message->what = g_strdup(contents);
+	message->flags = flags;
+	message->when = time(NULL);
+	
+	return message;
+}
+static inline void
+purple_message_destroy(PurpleMessage *message)
+{
+	g_free(message->who);
+	g_free(message->what);
+	g_free(message);
+}
 
+#define purple_account_privacy_deny_add     purple_privacy_deny_add
+#define purple_account_privacy_deny_remove  purple_privacy_deny_remove
+#define PurpleHttpConnection  PurpleUtilFetchUrlData
 
+#else
+// Purple3 helper functions
+#define purple_conversation_set_data(conv, key, value)  g_object_set_data(G_OBJECT(conv), key, value)
+#define purple_conversation_get_data(conv, key)         g_object_get_data(G_OBJECT(conv), key)
+#define purple_message_destroy          g_object_unref
 #endif
 
 
@@ -206,6 +248,32 @@ yahoo_string_get_chunk(const gchar *haystack, gsize len, const gchar *start, con
 	return g_strndup(chunk_start, chunk_end - chunk_start);
 }
 
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+static void
+yahoo_update_cookies(YahooAccount *ya, const GList *cookie_headers)
+{
+	const gchar *cookie_start;
+	const gchar *cookie_end;
+	gchar *cookie_name;
+	gchar *cookie_value;
+	const GList *cur;
+	
+	for (cur = cookie_headers; cur != NULL; cur = g_list_next(cur))
+	{
+		cookie_start = cur->data;
+		
+		cookie_end = strchr(cookie_start, '=');
+		cookie_name = g_strndup(cookie_start, cookie_end-cookie_start);
+		cookie_start = cookie_end + 1;
+		cookie_end = strchr(cookie_start, ';');
+		cookie_value= g_strndup(cookie_start, cookie_end-cookie_start);
+		cookie_start = cookie_end;
+
+		g_hash_table_replace(ya->cookie_table, cookie_name, cookie_value);
+	}
+}
+
+#else
 static void
 yahoo_update_cookies(YahooAccount *ya, const gchar *headers)
 {
@@ -235,6 +303,7 @@ yahoo_update_cookies(YahooAccount *ya, const gchar *headers)
 		g_hash_table_replace(ya->cookie_table, cookie_name, cookie_value);
 	}
 }
+#endif
 
 static void
 yahoo_cookie_foreach_cb(gchar *cookie_name, gchar *cookie_value, GString *str)
@@ -255,17 +324,32 @@ yahoo_cookies_to_string(YahooAccount *ya)
 }
 
 static void
-yahoo_response_callback(PurpleUtilFetchUrlData *url_data, gpointer user_data, const gchar *url_text, gsize len, const gchar *error_message)
+yahoo_response_callback(PurpleHttpConnection *http_conn, 
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+PurpleHttpResponse *response, gpointer user_data)
 {
+	gsize len;
+	const gchar *url_text = purple_http_response_get_data(response, &len);
+#else
+gpointer user_data, const gchar *url_text, gsize len, const gchar *error_message)
+{
+#endif
 	const gchar *body;
 	gsize body_len;
 	YahooProxyConnection *conn = user_data;
 	JsonParser *parser = json_parser_new();
 	
+#if !PURPLE_VERSION_CHECK(3, 0, 0)
 	yahoo_update_cookies(conn->ya, url_text);
 	
 	body = g_strstr_len(url_text, len, "\r\n\r\n");
 	body_len = len - (body - url_text);
+#else
+	yahoo_update_cookies(conn->ya, purple_http_response_get_headers_by_name(response, "Set-Cookie"));
+
+	body = url_text;
+	body_len = len;
+#endif
 	
 	if (!json_parser_load_from_data(parser, body, body_len, NULL))
 	{
@@ -290,9 +374,6 @@ static void
 yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, YahooProxyCallbackFunc callback, gpointer user_data)
 {
 	PurpleAccount *account;
-	GString *headers;
-	gchar *host = NULL, *path = NULL, *user = NULL, *password = NULL;
-	int port;
 	YahooProxyConnection *conn;
 	gchar *cookies;
 	
@@ -303,9 +384,36 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 	conn->ya = ya;
 	conn->callback = callback;
 	conn->user_data = user_data;
-
-	purple_url_parse(url, &host, &port, &path, &user, &password);
+	
+	cookies = yahoo_cookies_to_string(ya);
+	
 	purple_debug_info("yahoo", "Fetching url %s\n", url);
+
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+	
+	PurpleHttpRequest *request = purple_http_request_new(url);
+	purple_http_request_header_set(request, "Accept", "*/*");
+	purple_http_request_header_set(request, "User-Agent", YAHOO_USERAGENT);
+	purple_http_request_header_set(request, "Cookie", cookies);
+	
+	if (postdata) {
+		purple_debug_info("yahoo", "With postdata %s\n", postdata);
+		
+		if (postdata[0] == '{') {
+			purple_http_request_header_set(request, "Content-Type", "application/json");
+		} else {
+			purple_http_request_header_set(request, "Content-Type", "application/x-www-form-urlencoded");
+		}
+		purple_http_request_set_contents(request, postdata, -1);
+	}
+	
+	purple_http_request(ya->pc, request, yahoo_response_callback, conn);
+	purple_http_request_unref(request);
+#else
+	GString *headers;
+	gchar *host = NULL, *path = NULL, *user = NULL, *password = NULL;
+	int port;
+	purple_url_parse(url, &host, &port, &path, &user, &password);
 	
 	headers = g_string_new(NULL);
 	
@@ -316,12 +424,9 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 	g_string_append_printf(headers, "Host: %s\r\n", host);
 	g_string_append_printf(headers, "Accept: */*\r\n");
 	g_string_append_printf(headers, "User-Agent: " YAHOO_USERAGENT "\r\n");
-	
-	cookies = yahoo_cookies_to_string(ya);
 	g_string_append_printf(headers, "Cookie: %s\r\n", cookies);
-	g_free(cookies);
 
-	if(postdata) {
+	if (postdata) {
 		purple_debug_info("yahoo", "With postdata %s\n", postdata);
 		
 		if (postdata[0] == '{') {
@@ -345,6 +450,9 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 	purple_util_fetch_url_request_len_with_account(ya->account, url, FALSE, YAHOO_USERAGENT, TRUE, headers->str, TRUE, 6553500, yahoo_response_callback, conn);
 	
 	g_string_free(headers, TRUE);
+#endif
+
+	g_free(cookies);
 }
 
 static void
@@ -407,25 +515,34 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 			if (subkey == NULL) {
 				// New buddy
 				const gchar *userId = json_object_get_string_member(obj, "userId");
-				PurpleBuddy *buddy = purple_find_buddy(ya->account, userId);
+				const gchar *fullName = json_object_get_string_member(obj, "fullName");
+				PurpleBuddy *buddy = purple_blist_find_buddy(ya->account, userId);
 				
 				if (buddy == NULL) {
-					buddy = purple_buddy_new(ya->account, userId, json_object_get_string_member(obj, "fullName"));
+					buddy = purple_buddy_new(ya->account, userId, fullName);
 					if (yahoo_group == NULL) {
-						yahoo_group = purple_group_new(_("Yahoo"));
-						purple_blist_add_group(yahoo_group, NULL);
+						yahoo_group = purple_blist_find_group(_("Yahoo"));
+						if (!yahoo_group)
+						{
+							yahoo_group = purple_group_new(_("Yahoo"));
+							purple_blist_add_group(yahoo_group, NULL);
+						}
 					}
 					purple_blist_add_buddy(buddy, NULL, yahoo_group, NULL);
 				}
 				
+				if (purple_buddy_get_server_alias(buddy) == NULL || !purple_strequal(purple_buddy_get_server_alias(buddy), fullName)) {
+					purple_serv_got_alias(ya->pc, userId, fullName);
+				}
+				
 				if (G_UNLIKELY(purple_strequal(userId, ya->self_user))) {
-					const gchar *account_alias = purple_account_get_alias(ya->account);
+					const gchar *account_alias = purple_account_get_private_alias(ya->account);
 					if (G_UNLIKELY(!account_alias || !*account_alias)) {
-						purple_account_set_alias(ya->account, json_object_get_string_member(obj, "fullName"));
+						purple_account_set_private_alias(ya->account, fullName);
 					}
 				}
 				
-				purple_prpl_got_user_status(ya->account, userId, "online", NULL);
+				purple_protocol_got_user_status(ya->account, userId, "online", NULL);
 				
 				if (json_object_has_member(obj, "picture")) {
 					const gchar *mediaId = json_array_get_string_element(json_object_get_array_member(obj, "picture"), 3);
@@ -450,7 +567,7 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 				const gchar *groupId = json_object_get_string_member(obj, "groupId");
 				if (json_object_get_boolean_member(obj, "defaultGroup")) {
 					const gchar *otherUser = json_array_get_string_element(json_object_get_array_member(obj, "defaultGroupOtherUser"), 1);
-					PurpleBuddy *buddy = purple_find_buddy(ya->account, otherUser);
+					PurpleBuddy *buddy = purple_blist_find_buddy(ya->account, otherUser);
 					
 					// This is a one-to-one IM
 					g_hash_table_replace(ya->one_to_ones, g_strdup(groupId), g_strdup(otherUser));
@@ -498,10 +615,10 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 								purple_conversation_set_data(PURPLE_CONVERSATION(chatconv), "group", g_strdup(group));
 							}
 							
-							serv_got_chat_in(ya->pc, g_str_hash(group), user, msg_flags, message, timestamp);
+							purple_serv_got_chat_in(ya->pc, g_str_hash(group), user, msg_flags, message, timestamp);
 						} else {
 							if (msg_flags == PURPLE_MESSAGE_RECV) {
-								serv_got_im(ya->pc, user, message, msg_flags, timestamp);
+								purple_serv_got_im(ya->pc, user, message, msg_flags, timestamp);
 								
 								//sometimes we get chat messages before we get the list of groups
 								// if (!g_hash_table_contains(ya->one_to_ones, group)) {
@@ -511,12 +628,15 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 							} else {
 								const gchar *other_user = g_hash_table_lookup(ya->one_to_ones, group);
 								//TODO null check
-								PurpleConversation *conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, other_user, ya->account);
+								PurpleIMConversation *imconv = purple_conversations_find_im_with_account(other_user, ya->account);
+								PurpleMessage *msg = purple_message_new_outgoing(other_user, message, msg_flags);
 								
-								if (conv == NULL) {
-									conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, ya->account, other_user);
+								if (imconv == NULL) {
+									imconv = purple_im_conversation_new(ya->account, other_user);
 								}
-								purple_conversation_write(conv, other_user, message, msg_flags, timestamp);
+								purple_message_set_time(msg, timestamp);
+								purple_conversation_write_message(PURPLE_CONVERSATION(imconv), msg);
+								purple_message_destroy(msg);
 							}
 						}
 					}
@@ -571,26 +691,29 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 							purple_conversation_set_data(PURPLE_CONVERSATION(chatconv), "groupId", g_strdup(groupId));
 						}
 						
-						serv_got_chat_in(ya->pc, g_str_hash(groupId), userId, msg_flags, media_url, timestamp);
+						purple_serv_got_chat_in(ya->pc, g_str_hash(groupId), userId, msg_flags, media_url, timestamp);
 					} else {
 						if (msg_flags == PURPLE_MESSAGE_RECV) {
-							serv_got_im(ya->pc, userId, media_url, msg_flags, timestamp);
+							purple_serv_got_im(ya->pc, userId, media_url, msg_flags, timestamp);
 						} else {
 							const gchar *other_user = g_hash_table_lookup(ya->one_to_ones, groupId);
 							//TODO null check
-							PurpleConversation *conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, other_user, ya->account);
+							PurpleIMConversation *imconv = purple_conversations_find_im_with_account(other_user, ya->account);
+							PurpleMessage *msg = purple_message_new_outgoing(other_user, media_url, msg_flags);
 							
-							if (conv == NULL) {
-								conv = purple_conversation_new(PURPLE_CONV_TYPE_IM, ya->account, other_user);
+							if (imconv == NULL) {
+								imconv = purple_im_conversation_new(ya->account, other_user);
 							}
-							purple_conversation_write(conv, other_user, media_url, msg_flags, timestamp);
+							purple_message_set_time(msg, timestamp);
+							purple_conversation_write_message(PURPLE_CONVERSATION(imconv), msg);
+							purple_message_destroy(msg);
 						}
 					}
 				}
 			}
 		} else if (purple_strequal(key, "BlockedUser")) {
 			const gchar *userId = json_array_get_string_element(key_array, 1);
-			purple_privacy_deny_add(ya->account, userId, TRUE);
+			purple_account_privacy_deny_add(ya->account, userId, TRUE);
 		}
 	} else if (purple_strequal(msg, "SyncBatch")) {
 		response = json_object_new();
@@ -609,7 +732,7 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 		
 		if (purple_strequal(key, "BlockedUser")) {
 			const gchar *userId = json_array_get_string_element(key_array, 1);
-			purple_privacy_deny_remove(ya->account, userId, TRUE);
+			purple_account_privacy_deny_remove(ya->account, userId, TRUE);
 		}
 	}
 	
@@ -631,7 +754,7 @@ yahoo_rpc_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 		ya->self_user = g_strdup(json_object_get_string_member(obj, "userId"));
 		
 		purple_connection_set_display_name(ya->pc, ya->self_user);
-		purple_connection_set_state(ya->pc, PURPLE_CONNECTED);
+		purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTED);
 		
 		//process batch
 		json_array_foreach_element_reverse(json_object_get_array_member(obj, "batch"), yahoo_process_msg, ya);
@@ -639,11 +762,11 @@ yahoo_rpc_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 		yahoo_start_socket(ya);
 	} else if (purple_strequal(msg, "UserMustActivate")) {
 		purple_notify_uri(ya->pc, "https://mail.yahoo.com/");
-		purple_connection_error(ya->pc, _("Please login to the Yahoo webmail first, to continue"));
+		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, _("Please login to the Yahoo webmail first, to continue"));
 	} else if (purple_strequal(msg, "InvalidCredentials")) {
-		purple_connection_error(ya->pc, "Session expired");
+		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Session expired");
 	} else {
-		purple_connection_error(ya->pc, json_object_get_string_member(obj, "reason"));
+		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, json_object_get_string_member(obj, "reason"));
 	}
 }
 	
@@ -654,12 +777,14 @@ yahoo_auth_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 	
 	if (purple_strequal(json_object_get_string_member(obj, "status"), "error")) {
 		if (purple_strequal(json_object_get_string_member(obj, "code"), "1212")) {
-			purple_connection_error_reason(ya->pc, PURPLE_CONNECTION_ERROR_AUTHENTICATION_FAILED,  json_object_get_string_member(obj, "message"));
+			purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_AUTHENTICATION_FAILED,  json_object_get_string_member(obj, "message"));
 		} else {
-			purple_connection_error(ya->pc, json_object_get_string_member(obj, "message"));
+			purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, json_object_get_string_member(obj, "message"));
 		}
 	} else {
 		const gchar *rpcdata = "{\"msg\":\"OpenSession\",\"device\":{\"kind\":\"mobile\"},\"auth\":{\"provider\":\"signin\"},\"version\":{\"platform\":\"web\",\"app\":\"iris/dogfood\",\"appVersion\":" YAHOO_PRETEND_VERSION "},\"batch\":[]}";
+		
+		purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
 		yahoo_fetch_url(ya, "https://prod.iris.yahoo.com/prod/rpc?wait=1&v=1", rpcdata, yahoo_rpc_callback, NULL);
 	}
 }
@@ -669,26 +794,39 @@ yahoo_restart_channel(YahooAccount *ya)
 {
 	gchar *rpcdata = g_strdup_printf("{\"msg\":\"ReopenSession\",\"sessionToken\":\"%s\",\"batch\":[],\"version\":{\"platform\":\"web\",\"app\":\"iris/dogfood\",\"appVersion\":" YAHOO_PRETEND_VERSION "}}", ya->session_token);
 	
+	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
 	yahoo_fetch_url(ya, "https://prod.iris.yahoo.com/prod/rpc?wait=1&v=1", rpcdata, yahoo_rpc_callback, NULL);
 	
 	g_free(rpcdata);
 }
 
 static void
-yahoo_preauth_callback(PurpleUtilFetchUrlData *url_data, gpointer user_data, const gchar *url_text, gsize len, const gchar *error_message)
+yahoo_preauth_callback(PurpleHttpConnection *http_conn, 
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+PurpleHttpResponse *response, gpointer user_data)
 {
+	gsize len;
+	const gchar *url_text = purple_http_response_get_data(response, &len);
+#else
+gpointer user_data, const gchar *url_text, gsize len, const gchar *error_message)
+{
+#endif
 	YahooAccount *ya = user_data;
 	GString *postdata = g_string_new("");
 	gchar *crumb = yahoo_string_get_chunk(url_text, len, "<input name=\"_crumb\" type=\"hidden\" value=\"", "\"");
 	
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+	yahoo_update_cookies(ya, purple_http_response_get_headers_by_name(response, "Set-Cookie"));
+#else
 	yahoo_update_cookies(ya, url_text);
+#endif
 	if (g_hash_table_lookup(ya->cookie_table, "B") == NULL) {
-		purple_connection_error(ya->pc, "Couldn't get login cookies");
+		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Couldn't get login cookies");
 		return;
 	}
 	
 	g_string_append_printf(postdata, "username=%s&", purple_url_encode(purple_account_get_username(ya->account)));
-	g_string_append_printf(postdata, "passwd=%s&", purple_url_encode(purple_account_get_password(ya->account)));
+	g_string_append_printf(postdata, "passwd=%s&", purple_url_encode(purple_connection_get_password(ya->pc)));
 	g_string_append_printf(postdata, "_crumb=%s&", purple_url_encode(crumb));
 	g_string_append(postdata, "countrycode=1&");
 	g_string_append(postdata, "signin=&");
@@ -697,6 +835,7 @@ yahoo_preauth_callback(PurpleUtilFetchUrlData *url_data, gpointer user_data, con
 	g_string_append(postdata, "_format=json&");
 	g_string_append(postdata, "_seqid=1&");
 	
+	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
 	yahoo_fetch_url(ya, "https://login.yahoo.com/?.pd=&.src=messenger&.done=https%3A%2F%2Fmessenger.yahoo.com%2F", postdata->str, yahoo_auth_callback, NULL);
 	
 	g_free(crumb);
@@ -711,7 +850,7 @@ yahoo_build_groups_from_blist(YahooAccount *ya)
 	for (node = purple_blist_get_root();
 	     node != NULL;
 		 node = purple_blist_node_next(node, TRUE)) {
-		if (PURPLE_BLIST_NODE_IS_CHAT(node)) {
+		if (PURPLE_IS_CHAT(node)) {
 			const gchar *groupId;
 			PurpleChat *chat = PURPLE_CHAT(node);
 			if (purple_chat_get_account(chat) != ya->account) {
@@ -728,7 +867,7 @@ yahoo_build_groups_from_blist(YahooAccount *ya)
 			if (groupId != NULL) {
 				g_hash_table_replace(ya->group_chats, g_strdup(groupId), NULL);
 			}
-		} else if (PURPLE_BLIST_NODE_IS_BUDDY(node)) {
+		} else if (PURPLE_IS_BUDDY(node)) {
 			const gchar *groupId;
 			const gchar *name;
 			PurpleBuddy *buddy = PURPLE_BUDDY(node);
@@ -761,7 +900,7 @@ yahoo_login(PurpleAccount *account)
 	g_string_append(preauth_url, ".asdk_embedded=1&");
 	
 	ya = g_new0(YahooAccount, 1);
-	pc->proto_data = ya;
+	purple_connection_set_protocol_data(pc, ya);
 	ya->account = account;
 	ya->pc = pc;
 	ya->cookie_table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
@@ -779,7 +918,17 @@ yahoo_login(PurpleAccount *account)
 	ya->sent_message_ids = g_hash_table_new_full(g_str_insensitive_hash, g_str_insensitive_equal, g_free, NULL);
 	ya->media_urls = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	
+	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
+#if !PURPLE_VERSION_CHECK(3, 0, 0)
 	purple_util_fetch_url_request_len_with_account(account, preauth_url->str, FALSE, YAHOO_USERAGENT, FALSE, NULL, TRUE, 6553500, yahoo_preauth_callback, ya);
+#else
+	{
+		PurpleHttpRequest *request = purple_http_request_new(preauth_url->str);
+		purple_http_request_header_set(request, "User-Agent", YAHOO_USERAGENT);
+		purple_http_request(ya->pc, request, yahoo_preauth_callback, ya);
+		purple_http_request_unref(request);
+	}
+#endif
 	
 	g_string_free(preauth_url, TRUE);
 	
@@ -793,7 +942,7 @@ yahoo_login(PurpleAccount *account)
 static void 
 yahoo_close(PurpleConnection *pc)
 {
-	YahooAccount *ya = pc->proto_data;
+	YahooAccount *ya = purple_connection_get_protocol_data(pc);
 	// PurpleAccount *account;
 	
 	g_return_if_fail(ya != NULL);
@@ -863,7 +1012,7 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 				
 				yahoo_restart_channel(ya);
 			} else if (purple_strequal(msg, "InvalidCredentials")) {
-				purple_connection_error(ya->pc, "Session expired");
+				purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Session expired");
 			}
 			
 		} else {
@@ -1123,7 +1272,7 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 	}
 	
 	if ((done_some_reads == FALSE && read_len <= 0 && errno != EAGAIN && errno != EINTR)) {
-		//purple_connection_error_reason(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Lost connection to server");
+		//purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Lost connection to server");
 		// Try reconnect
 		yahoo_start_socket(ya);
 	}
@@ -1197,7 +1346,7 @@ yahoo_start_socket(YahooAccount *ya)
 void
 yahoo_block_user(PurpleConnection *pc, const char *who)
 {
-	YahooAccount *ya = pc->proto_data;
+	YahooAccount *ya = purple_connection_get_protocol_data(pc);
 	JsonObject *data = json_object_new();
 	
 	json_object_set_string_member(data, "msg", "SetUserBlocked");
@@ -1211,7 +1360,7 @@ yahoo_block_user(PurpleConnection *pc, const char *who)
 void
 yahoo_unblock_user(PurpleConnection *pc, const char *who)
 {
-	YahooAccount *ya = pc->proto_data;
+	YahooAccount *ya = purple_connection_get_protocol_data(pc);
 	JsonObject *data = json_object_new();
 	
 	json_object_set_string_member(data, "msg", "SetUserBlocked");
@@ -1403,11 +1552,19 @@ const gchar *message, PurpleMessageFlags flags)
 	return ret;
 }
 
-
-static int 
-yahoo_send_im(PurpleConnection *pc, const gchar *who, const gchar *message, PurpleMessageFlags flags)
+static int
+yahoo_send_im(PurpleConnection *pc, 
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+PurpleMessage *msg)
 {
-	YahooAccount *ya = pc->proto_data;
+	const gchar *who = purple_message_get_recipient(msg);
+	const gchar *message = purple_message_get_contents(msg);
+#else
+const gchar *who, const gchar *message, PurpleMessageFlags flags)
+{
+#endif
+
+	YahooAccount *ya = purple_connection_get_protocol_data(pc);
 	gchar *group_id = g_hash_table_lookup(ya->one_to_ones_rev, who);
 	
 	return yahoo_conversation_send_message(ya, group_id, message);
@@ -1491,7 +1648,7 @@ yahoo_cmd_leave(PurpleConversation *conv, const gchar *cmd, gchar **args, gchar 
 }
 
 static gboolean
-plugin_load(PurplePlugin *plugin)
+plugin_load(PurplePlugin *plugin, GError **error)
 {
 	purple_cmd_register("leave", "", PURPLE_CMD_P_PLUGIN, PURPLE_CMD_FLAG_CHAT |
 						PURPLE_CMD_FLAG_PROTOCOL_ONLY | PURPLE_CMD_FLAG_ALLOW_WRONG_ARGS,
@@ -1502,9 +1659,25 @@ plugin_load(PurplePlugin *plugin)
 }
 
 static gboolean
-plugin_unload(PurplePlugin *plugin)
+plugin_unload(PurplePlugin *plugin, GError **error)
 {
+	purple_signals_disconnect_by_handle(plugin);
+	
 	return TRUE;
+}
+
+// Purple2 Plugin Load Functions
+#if !PURPLE_VERSION_CHECK(3, 0, 0)
+static gboolean
+libpurple2_plugin_load(PurplePlugin *plugin)
+{
+	return plugin_load(plugin, NULL);
+}
+
+static gboolean
+libpurple2_plugin_unload(PurplePlugin *plugin)
+{
+	return plugin_unload(plugin, NULL);
 }
 
 static void
@@ -1520,92 +1693,46 @@ plugin_init(PurplePlugin *plugin)
 	
 	// option = purple_account_option_bool_new("Only show 'mobile' contacts", "mobile_contacts_only", FALSE);
 	// prpl_info->protocol_options = g_list_append(prpl_info->protocol_options, option);
+	
+	PurplePluginInfo *info;
+	PurplePluginProtocolInfo *prpl_info = g_new0(PurplePluginProtocolInfo, 1);
+	
+	info = plugin->info;
+	if (info == NULL) {
+		plugin->info = info = g_new0(PurplePluginInfo, 1);
+	}
+	info->extra_info = prpl_info;
+	#if PURPLE_MINOR_VERSION >= 5
+		prpl_info->struct_size = sizeof(PurplePluginProtocolInfo);
+	#endif
+	#if PURPLE_MINOR_VERSION >= 8
+		//prpl_info->add_buddy_with_invite = yahoo_add_buddy_with_invite;
+	#endif
+	
+	prpl_info->options = OPT_PROTO_SLASH_COMMANDS_NATIVE;
+	prpl_info->icon_spec.format = "png,gif,jpeg";
+	prpl_info->icon_spec.min_width = 0;
+	prpl_info->icon_spec.min_height = 0;
+	prpl_info->icon_spec.max_width = 96;
+	prpl_info->icon_spec.max_height = 96;
+	prpl_info->icon_spec.max_filesize = 0;
+	prpl_info->icon_spec.scale_rules = PURPLE_ICON_SCALE_DISPLAY;
+	
+	prpl_info->list_icon = yahoo_list_icon;
+	prpl_info->status_types = yahoo_status_types;
+	prpl_info->chat_info = yahoo_chat_info;
+	prpl_info->chat_info_defaults = yahoo_chat_info_defaults;
+	prpl_info->login = yahoo_login;
+	prpl_info->close = yahoo_close;
+	prpl_info->send_im = yahoo_send_im;
+	prpl_info->add_deny = yahoo_block_user;
+	prpl_info->rem_deny = yahoo_unblock_user;
+	prpl_info->join_chat = yahoo_join_chat;
+	prpl_info->get_chat_name = yahoo_get_chat_name;
+	prpl_info->chat_invite = yahoo_chat_invite;
+	prpl_info->chat_send = yahoo_chat_send;
+	
 }
-
-PurplePluginProtocolInfo prpl_info = {
-	/* options */
-	//TODO, use OPT_PROTO_IM_IMAGE for sending inline messages
-	OPT_PROTO_SLASH_COMMANDS_NATIVE/*|OPT_PROTO_IM_IMAGE*/,
-
-	NULL,                /* user_splits */
-	NULL,                /* protocol_options */
-	{"png,gif,jpeg", 0, 0, 96, 96, 0, PURPLE_ICON_SCALE_DISPLAY}, /* icon_spec */
-	yahoo_list_icon,    /* list_icon */
-	NULL,                /* list_emblem */
-	NULL,                /* status_text */
-	NULL,                /* tooltip_text */
-	yahoo_status_types,  /* status_types */
-	NULL/*mt_node_menu*/,        /* blist_node_menu */
-	yahoo_chat_info,     /* chat_info */
-	yahoo_chat_info_defaults, /* chat_info_defaults */
-	yahoo_login,         /* login */
-	yahoo_close,         /* close */
-	yahoo_send_im,       /* send_im */
-	NULL,                /* set_info */
-	NULL,                /* send_typing */
-	NULL,                /* get_info */
-	NULL,                /* set_status */
-	NULL,                /* set_idle */
-	NULL,                /* change_passwd */
-	NULL,                /* add_buddy */
-	NULL,                /* add_buddies */
-	NULL,                /* remove_buddy */
-	NULL,                /* remove_buddies */
-	NULL,                /* add_permit */
-	yahoo_block_user,    /* add_deny */
-	NULL,                /* rem_permit */
-	yahoo_unblock_user,  /* rem_deny */
-	NULL,                /* set_permit_deny */
-	yahoo_join_chat,     /* join_chat */
-	NULL,                /* reject chat invite */
-	yahoo_get_chat_name, /* get_chat_name */
-	yahoo_chat_invite,   /* chat_invite */
-	NULL,                /* chat_leave */
-	NULL,                /* chat_whisper */
-	yahoo_chat_send,     /* chat_send */
-	NULL/*mt_keepalive*/,        /* keepalive */
-	NULL,                /* register_user */
-	NULL,                /* get_cb_info */
-	NULL,                /* get_cb_away */
-	NULL,                /* alias_buddy */
-	NULL,                /* group_buddy */
-	NULL,                /* rename_group */
-	NULL,                /* buddy_free */
-	NULL,                /* convo_closed */
-	NULL,                /* normalize */
-	NULL,                /* set_buddy_icon */
-	NULL,                /* remove_group */
-	NULL,                /* get_cb_real_name */
-	NULL,                /* set_chat_topic */
-	NULL,                /* find_blist_chat */
-	NULL,                /* roomlist_get_list */
-	NULL,                /* roomlist_cancel */
-	NULL,                /* roomlist_expand_category */
-	NULL,                /* can_receive_file */
-	NULL,                /* send_file */
-	NULL,                /* new_xfer */
-	NULL,                /* offline_message */
-	NULL,                /* whiteboard_prpl_ops */
-	NULL,                /* send_raw */
-	NULL,                /* roomlist_room_serialize */
-	NULL,                /* unregister_user */
-	NULL,                /* send_attention */
-	NULL,                /* attention_types */
-#if PURPLE_MAJOR_VERSION == 2 && PURPLE_MINOR_VERSION == 1
-	(gpointer)
-#endif
-	sizeof(PurplePluginProtocolInfo), /* struct_size */
-	NULL/*mt_account_text*/,     /* get_account_text_table */
-	NULL,                /* initiate_media */
-	NULL,                /* can_do_media */
-	NULL,                /* get_moods */
-	NULL,                /* set_public_alias */
-	NULL                 /* get_public_alias */
-#if PURPLE_MAJOR_VERSION == 2 && PURPLE_MINOR_VERSION >= 8
-,	NULL,                /* add_buddy_with_invite */
-	NULL                 /* add_buddies_with_invite */
-#endif
-};
 
 static PurplePluginInfo info = {
 	PURPLE_PLUGIN_MAGIC,
@@ -1620,16 +1747,16 @@ static PurplePluginInfo info = {
 	PURPLE_PRIORITY_DEFAULT, /* priority */
 	YAHOO_PLUGIN_ID, /* id */
 	"Yahoo (2016)", /* name */
-	"1.0", /* version */
+	YAHOO_PLUGIN_VERSION, /* version */
 	"", /* summary */
 	"", /* description */
 	"Eion Robb <eion@robbmob.com>", /* author */
-	"", /* homepage */
-	plugin_load, /* load */
-	plugin_unload, /* unload */
+	YAHOO_PLUGIN_WEBSITE, /* homepage */
+	libpurple2_plugin_load, /* load */
+	libpurple2_plugin_unload, /* unload */
 	NULL, /* destroy */
 	NULL, /* ui_info */
-	&prpl_info, /* extra_info */
+	NULL, /* extra_info */
 	NULL, /* prefs_info */
 	NULL/*plugin_actions*/, /* actions */
 	NULL, /* padding */
@@ -1639,3 +1766,129 @@ static PurplePluginInfo info = {
 };
 
 PURPLE_INIT_PLUGIN(yahoo-plusplus, plugin_init, info);
+
+#else
+//Purple 3 plugin load functions
+
+
+G_MODULE_EXPORT GType yahoo_protocol_get_type(void);
+#define YAHOO_TYPE_PROTOCOL			(yahoo_protocol_get_type())
+#define YAHOO_PROTOCOL(obj)			(G_TYPE_CHECK_INSTANCE_CAST((obj), YAHOO_TYPE_PROTOCOL, YahooProtocol))
+#define YAHOO_PROTOCOL_CLASS(klass)		(G_TYPE_CHECK_CLASS_CAST((klass), YAHOO_TYPE_PROTOCOL, YahooProtocolClass))
+#define YAHOO_IS_PROTOCOL(obj)		(G_TYPE_CHECK_INSTANCE_TYPE((obj), YAHOO_TYPE_PROTOCOL))
+#define YAHOO_IS_PROTOCOL_CLASS(klass)	(G_TYPE_CHECK_CLASS_TYPE((klass), YAHOO_TYPE_PROTOCOL))
+#define YAHOO_PROTOCOL_GET_CLASS(obj)	(G_TYPE_INSTANCE_GET_CLASS((obj), YAHOO_TYPE_PROTOCOL, YahooProtocolClass))
+
+typedef struct _YahooProtocol
+{
+	PurpleProtocol parent;
+} YahooProtocol;
+
+typedef struct _YahooProtocolClass
+{
+	PurpleProtocolClass parent_class;
+} YahooProtocolClass;
+
+static void
+yahoo_protocol_init(PurpleProtocol *prpl_info)
+{
+	PurpleProtocol *info = prpl_info;
+
+	info->id = YAHOO_PLUGIN_ID;
+	info->name = "Yahoo (2016)";
+}
+
+static void
+yahoo_protocol_class_init(PurpleProtocolClass *prpl_info)
+{
+	prpl_info->login = yahoo_login;
+	prpl_info->close = yahoo_close;
+	prpl_info->status_types = yahoo_status_types;
+	prpl_info->list_icon = yahoo_list_icon;
+}
+
+static void
+yahoo_protocol_privacy_iface_init(PurpleProtocolPrivacyIface *prpl_info)
+{
+	prpl_info->add_deny = yahoo_block_user;
+	prpl_info->rem_deny = yahoo_unblock_user;
+}
+
+static void 
+yahoo_protocol_im_iface_init(PurpleProtocolIMIface *prpl_info)
+{
+	prpl_info->send = yahoo_send_im;
+}
+
+static void 
+yahoo_protocol_chat_iface_init(PurpleProtocolChatIface *prpl_info)
+{
+	prpl_info->send = yahoo_chat_send;
+	prpl_info->info = yahoo_chat_info;
+	prpl_info->info_defaults = yahoo_chat_info_defaults;
+	prpl_info->join = yahoo_join_chat;
+	prpl_info->get_name = yahoo_get_chat_name;
+	prpl_info->invite = yahoo_chat_invite;
+}
+
+static PurpleProtocol *yahoo_protocol;
+
+PURPLE_DEFINE_TYPE_EXTENDED(
+	YahooProtocol, yahoo_protocol, PURPLE_TYPE_PROTOCOL, 0,
+
+	PURPLE_IMPLEMENT_INTERFACE_STATIC(PURPLE_TYPE_PROTOCOL_IM_IFACE,
+	                                  yahoo_protocol_im_iface_init)
+
+	PURPLE_IMPLEMENT_INTERFACE_STATIC(PURPLE_TYPE_PROTOCOL_CHAT_IFACE,
+	                                  yahoo_protocol_chat_iface_init)
+
+	PURPLE_IMPLEMENT_INTERFACE_STATIC(PURPLE_TYPE_PROTOCOL_PRIVACY_IFACE,
+	                                  yahoo_protocol_privacy_iface_init)
+
+);
+
+static gboolean
+libpurple3_plugin_load(PurplePlugin *plugin, GError **error)
+{
+	yahoo_protocol_register_type(plugin);
+	yahoo_protocol = purple_protocols_add(YAHOO_TYPE_PROTOCOL, error);
+	if (!yahoo_protocol)
+		return FALSE;
+
+	return plugin_load(plugin, error);
+}
+
+static gboolean
+libpurple3_plugin_unload(PurplePlugin *plugin, GError **error)
+{
+	if (!plugin_unload(plugin, error))
+		return FALSE;
+
+	if (!purple_protocols_remove(yahoo_protocol, error))
+		return FALSE;
+
+	return TRUE;
+}
+
+static PurplePluginInfo *
+plugin_query(GError **error)
+{
+	return purple_plugin_info_new(
+		"id",          YAHOO_PLUGIN_ID,
+		"name",        "FunYahoo++",
+		"version",     YAHOO_PLUGIN_VERSION,
+		"category",    N_("Protocol"),
+		"summary",     N_("Yahoo Protocol Plugins."),
+		"description", N_("Adds Yahoo protocol support to libpurple."),
+		"website",     YAHOO_PLUGIN_WEBSITE,
+		"abi-version", PURPLE_ABI_VERSION,
+		"flags",       PURPLE_PLUGIN_INFO_FLAGS_INTERNAL |
+		               PURPLE_PLUGIN_INFO_FLAGS_AUTO_LOAD,
+		NULL
+	);
+}
+
+PURPLE_PLUGIN_INIT(funyahooplusplus, plugin_query,
+		libpurple3_plugin_load, libpurple3_plugin_unload);
+
+#endif
