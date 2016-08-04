@@ -16,5 +16,14 @@ This is not a slight change from the old protocol to a new one, instead, it's a 
 If you're having trouble logging in, try logging into Yahoo Mail.  For some inexplicable reason, the messenger is linked to that.
 
 
+### How to set up ###
+Add a new account to Pidgin.  The dropdown list should have a "Yahoo (2016)" option.
+
+### How to install on Windows ###
+Download [libyahoo-plusplus.dll](http://eion.robbmob.com/libyahoo-plusplus.dll) and place into your `Program Files\Pidgin\plugins` folder.  (If you haven't used the Facebook, Skypeweb or Hangouts plugin before you'll also need to download  [libjson-glib-1.0.dll](https://github.com/EionRobb/skype4pidgin/raw/master/skypeweb/libjson-glib-1.0.dll) and place that into `Program Files\Pidgin` - not the plugins folder.)
+
 ### Whats up with the name? ###
 Just a fun jab at some of the forks/clones of Pidgin over the years
+
+
+GPLv3+ licenced 
