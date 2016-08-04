@@ -1007,9 +1007,6 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 			const gchar *msg = json_object_get_string_member(message, "msg");
 			
 			if (purple_strequal(msg, "ChannelNotFound")) {
-				purple_ssl_close(ya->websocket);
-				ya->websocket = NULL;
-				
 				yahoo_restart_channel(ya);
 			} else if (purple_strequal(msg, "InvalidCredentials")) {
 				purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Session expired");
@@ -1191,10 +1188,6 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 				if (ya->packet_code == 136) {
 					purple_debug_error("yahoo", "websocket closed\n");
 					
-					purple_ssl_close(conn);
-					ya->websocket = NULL;
-					ya->websocket_header_received = FALSE;
-					
 					// Try reconnect
 					yahoo_start_socket(ya);
 					
@@ -1273,6 +1266,8 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 	
 	if ((done_some_reads == FALSE && read_len <= 0 && errno != EAGAIN && errno != EINTR)) {
 		//purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Lost connection to server");
+		
+		purple_debug_error("yahoo", "got errno %d, read_len %d from websocket thread\n", errno, read_len);
 		// Try reconnect
 		yahoo_start_socket(ya);
 	}
@@ -1331,6 +1326,10 @@ static void
 yahoo_start_socket(YahooAccount *ya)
 {
 	//Reset all the old stuff
+	if (ya->websocket != NULL) {
+		purple_ssl_close(ya->websocket);
+	}
+	
 	ya->websocket = NULL;
 	ya->websocket_header_received = FALSE;
 	g_free(ya->frame); ya->frame = NULL;
