@@ -587,8 +587,45 @@ yahoo_process_mutation_op(JsonArray *array, guint index_, JsonNode *element_node
 	json_array_foreach_element_reverse(json_object_get_array_member(op, "entities"), yahoo_process_mutation_op_entity, ya);
 }
 
+void yahoo_block_user(PurpleConnection *pc, const char *who);
 static void yahoo_socket_write_json(YahooAccount *ya, JsonObject *data);
 static GHashTable *yahoo_chat_info_defaults(PurpleConnection *pc, const char *chatname);
+
+static void
+yahoo_auth_allow(
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+const gchar *message,
+#endif
+gpointer userdata)
+{
+	PurpleBuddy *buddy = userdata;
+	PurpleAccount *account = purple_buddy_get_account(buddy);
+	PurpleConnection *pc = purple_account_get_connection(account);
+	YahooAccount *ya = purple_connection_get_protocol_data(pc);
+	const gchar *userId = purple_buddy_get_name(buddy);
+	JsonObject *data = json_object_new();
+	
+	json_object_set_string_member(data, "msg", "AcceptUser");
+	json_object_set_string_member(data, "userId", userId);
+	json_object_set_int_member(data, "opId", ya->opid++);
+	
+	yahoo_socket_write_json(ya, data);
+}
+
+static void
+yahoo_auth_deny(
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+const gchar *message,
+#endif
+gpointer userdata)
+{
+	PurpleBuddy *buddy = userdata;
+	PurpleAccount *account = purple_buddy_get_account(buddy);
+	PurpleConnection *pc = purple_account_get_connection(account);
+	const gchar *userId = purple_buddy_get_name(buddy);
+	
+	yahoo_block_user(pc, userId);
+}
 	
 static void
 yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpointer user_data)
@@ -824,6 +861,19 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 		} else if (purple_strequal(key, "BlockedUser")) {
 			const gchar *userId = json_array_get_string_element(key_array, 1);
 			purple_account_privacy_deny_add(ya->account, userId, TRUE);
+		} else if (purple_strequal(key, "GroupPrivate")) {
+			if (json_object_has_member(obj, "unknownInviter")) {
+				JsonArray *unknownInviter = json_object_get_array_member(obj, "unknownInviter");
+				const gchar *userId = json_array_get_string_element(unknownInviter, 1);
+				PurpleBuddy *buddy = purple_blist_find_buddy(ya->account, userId);
+				const gchar *alias = purple_buddy_get_server_alias(buddy);
+				
+				if (buddy == NULL) {
+					buddy = purple_buddy_new(ya->account, userId, NULL);
+				}
+				
+				purple_account_request_authorization(ya->account, userId, NULL, alias, NULL, TRUE, yahoo_auth_allow, yahoo_auth_deny, buddy);
+			}
 		}
 	} else if (purple_strequal(msg, "SyncBatch")) {
 		response = json_object_new();
