@@ -567,6 +567,8 @@ yahoo_process_mutation_op_entity(JsonArray *array, guint index_, JsonNode *eleme
 			g_hash_table_replace(ya->one_to_ones, g_strdup(groupId), g_strdup(newItemId));
 			
 			g_free(groupId);
+			
+			purple_protocol_got_user_status(ya->account, newItemId, "online", NULL);
 		}
 		
 	}
@@ -1719,11 +1721,12 @@ yahoo_add_buddy(PurpleConnection *pc, PurpleBuddy *buddy, PurpleGroup *group
 	gchar *groupId;
 	gchar *memberId;
 	gchar *otherMemberId;
+	gboolean is_email_address = (strchr(buddy_name, '@') != NULL ? TRUE : FALSE);
 	
 	// If this isn't a 'real' user id, then freak out a little
-	if (strlen(buddy_name) != 26) {
-		//TODO should probably check that its not a 26 character long username/email address
-		gchar *serviceIdentifier = g_strdup_printf("%s:%s", "ymessenger", buddy_name);
+	if (is_email_address || strlen(buddy_name) != 26) {
+		//TODO should probably check that its not a 26 character long username
+		gchar *serviceIdentifier = g_strdup_printf("%s:%s", (is_email_address == TRUE ? "smtp" : "ymessenger"), buddy_name);
 		
 		// Needs to be a valid Base32 GUID
 		userId = yahoo_make_base32guid(ya->opid * 2);
