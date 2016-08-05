@@ -808,15 +808,15 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 						if (chatconv != NULL) {
 							purple_chat_conversation_add_user(chatconv, userId, message, cbflags, TRUE);
 						}
-					} else if (purple_strequal(json_object_get_string_member(obj, "type"), "memberRemoved")) {
-						const gchar *message = NULL; //"%s left the room."
-						const gchar *groupId = json_array_get_string_element(json_object_get_array_member(obj, "group"), 1);
-						const gchar *userId = json_array_get_string_element(json_object_get_array_member(obj, "user"), 1);
-						PurpleChatConversation *chatconv = purple_conversations_find_chat_with_account(groupId, ya->account);
-						
-						if (chatconv != NULL) {
-							purple_chat_conversation_remove_user(chatconv, userId, message);
-						}
+					}
+				} else if (purple_strequal(json_object_get_string_member(obj, "type"), "memberRemoved")) {
+					const gchar *message = NULL; //"%s left the room."
+					const gchar *groupId = json_array_get_string_element(json_object_get_array_member(obj, "group"), 1);
+					const gchar *userId = json_array_get_string_element(json_object_get_array_member(obj, "user"), 1);
+					PurpleChatConversation *chatconv = purple_conversations_find_chat_with_account(groupId, ya->account);
+					
+					if (chatconv != NULL) {
+						purple_chat_conversation_remove_user(chatconv, userId, message);
 					}
 				} else if (purple_strequal(subkey, "Item") && purple_strequal(json_array_get_string_element(key_array, 4), "media")) {
 					//TODO split this out for the regular message receive handling code
@@ -1579,6 +1579,9 @@ yahoo_chat_invite(PurpleConnection *pc, int id, const char *message, const char 
 	json_object_set_string_member(data, "groupId", groupId);
 	json_object_set_int_member(data, "opId", ya->opid++);
 	json_object_set_string_member(data, "userId", who);
+	json_object_set_string_member(data, "memberId", "00000000000FFFFF");
+	json_object_set_string_member(data, "firstName", "");
+	json_object_set_string_member(data, "lastName", "");
 	
 	yahoo_socket_write_json(ya, data);
 }
