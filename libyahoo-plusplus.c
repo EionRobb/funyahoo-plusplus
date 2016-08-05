@@ -175,6 +175,7 @@ purple_message_destroy(PurpleMessage *message)
 #define purple_account_privacy_deny_add     purple_privacy_deny_add
 #define purple_account_privacy_deny_remove  purple_privacy_deny_remove
 #define PurpleHttpConnection  PurpleUtilFetchUrlData
+#define purple_buddy_set_name  purple_blist_rename_buddy
 
 #else
 // Purple3 helper functions
@@ -223,6 +224,40 @@ typedef struct {
 
 
 
+
+static gchar *
+purple_base32_encode(const guchar *data, gsize len)
+{
+	static const char base32_alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+	char *out, *rv;
+	guchar work[5];
+	
+	g_return_val_if_fail(data != NULL, NULL);
+	g_return_val_if_fail(len > 0,  NULL);
+	
+	rv = out = g_malloc(((len / 5) + 1) * 8 + 1);
+	
+	for (; len; len -= MIN(5, len))
+	{
+		memset(work, 0, 5);
+		memcpy(work, data, MIN(5, len));
+		
+		*out++ = base32_alphabet[work[0] >> 3];
+		*out++ = base32_alphabet[((work[0] & 0x07) << 2) | (work[1] >> 6)];
+		*out++ = base32_alphabet[(work[1] >> 1) & 0x1f];
+		*out++ = base32_alphabet[((work[1] & 0x01) << 4) | (work[2] >> 4)];
+		*out++ = base32_alphabet[((work[2] & 0x0f) << 1) | (work[3] >> 7)];
+		*out++ = base32_alphabet[(work[3] >> 2) & 0x1f];
+		*out++ = base32_alphabet[((work[3] & 0x03) << 3) | (work[4] >> 5)];
+		*out++ = base32_alphabet[work[4] & 0x1f];
+		
+		data += MIN(5, len);
+	}
+	
+	*out = '\0';
+	
+	return rv;
+}
 
 gchar *
 yahoo_string_get_chunk(const gchar *haystack, gsize len, const gchar *start, const gchar *end)
@@ -461,22 +496,79 @@ yahoo_process_mutation_op_entity(JsonArray *array, guint index_, JsonNode *eleme
 	YahooAccount *ya = user_data;
 	JsonArray *change_array = json_node_get_array(element_node);
 	JsonArray *entity;
+	gint entity_length;
 	
-	if (json_array_get_int_element(change_array, 1) == 1) {
-		//String change
-		entity = json_array_get_array_element(change_array, 0);
-		if (json_array_get_length(entity) == 4 &&
-		    purple_strequal(json_array_get_string_element(entity, 0), "Group") &&
-		    purple_strequal(json_array_get_string_element(entity, 2), "items")) {
+	entity = json_array_get_array_element(change_array, 0);
+	entity_length = json_array_get_length(entity);
+	
+	if (entity_length == 4 &&
+		purple_strequal(json_array_get_string_element(entity, 0), "Group") &&
+		purple_strequal(json_array_get_string_element(entity, 2), "items")) {
+		
+		const gchar *oldItemId = json_array_get_string_element(change_array, 2);
+		if (g_hash_table_contains(ya->sent_message_ids, oldItemId)) {
+			const gchar *newItemId = json_array_get_string_element(entity, 3);
 			
-			const gchar *oldItemId = json_array_get_string_element(change_array, 2);
-			if (g_hash_table_contains(ya->sent_message_ids, oldItemId)) {
-				const gchar *newItemId = json_array_get_string_element(entity, 3);
-				
-				g_hash_table_remove(ya->sent_message_ids, oldItemId);
-				g_hash_table_replace(ya->sent_message_ids, g_strdup(newItemId), NULL);
-			}
+			g_hash_table_remove(ya->sent_message_ids, oldItemId);
+			g_hash_table_replace(ya->sent_message_ids, g_strdup(newItemId), NULL);
 		}
+		
+	} else if (entity_length == 2 &&
+		purple_strequal(json_array_get_string_element(entity, 0), "Group")) {
+		
+		const gchar *oldItemId = json_array_get_string_element(change_array, 2);
+		if (g_hash_table_contains(ya->group_chats, oldItemId)) {
+			const gchar *newItemId = json_array_get_string_element(entity, 1);
+			PurpleChat *chat;
+			
+			g_hash_table_remove(ya->group_chats, oldItemId);
+			g_hash_table_replace(ya->group_chats, g_strdup(newItemId), NULL);
+			
+			while ((chat = purple_blist_find_chat(ya->account, oldItemId))) {
+				purple_blist_node_set_string(PURPLE_BLIST_NODE(chat), "groupId", newItemId);
+				g_hash_table_replace(purple_chat_get_components(chat), g_strdup("groupId"), g_strdup(newItemId));
+			}
+			
+		} else if (g_hash_table_contains(ya->one_to_ones, oldItemId)) {
+			const gchar *newItemId = json_array_get_string_element(entity, 1);
+			gchar *userId = g_strdup(g_hash_table_lookup(ya->one_to_ones, oldItemId));
+			PurpleBuddy *buddy = purple_blist_find_buddy(ya->account, userId);
+				
+			if (buddy != NULL) {
+				purple_blist_node_set_string(PURPLE_BLIST_NODE(buddy), "groupId", newItemId);
+			}
+			
+			g_hash_table_remove(ya->one_to_ones, oldItemId);
+			g_hash_table_remove(ya->one_to_ones_rev, userId);
+			
+			g_hash_table_replace(ya->one_to_ones, g_strdup(newItemId), g_strdup(userId));
+			g_hash_table_replace(ya->one_to_ones_rev, g_strdup(userId), g_strdup(newItemId));
+			
+			g_free(userId);
+		}
+		
+	} else if (entity_length == 2 &&
+		purple_strequal(json_array_get_string_element(entity, 0), "User")) {
+		
+		const gchar *oldItemId = json_array_get_string_element(change_array, 2);
+		if (g_hash_table_contains(ya->one_to_ones_rev, oldItemId)) {
+			const gchar *newItemId = json_array_get_string_element(entity, 1);
+			gchar *groupId = g_strdup(g_hash_table_lookup(ya->one_to_ones_rev, oldItemId));
+			PurpleBuddy *bad_buddy;
+				
+			while ((bad_buddy = purple_blist_find_buddy(ya->account, oldItemId))) {
+				purple_buddy_set_name(bad_buddy, newItemId);
+			}
+			
+			g_hash_table_remove(ya->one_to_ones_rev, oldItemId);
+			g_hash_table_remove(ya->one_to_ones, groupId);
+			
+			g_hash_table_replace(ya->one_to_ones_rev, g_strdup(newItemId), g_strdup(groupId));
+			g_hash_table_replace(ya->one_to_ones, g_strdup(groupId), g_strdup(newItemId));
+			
+			g_free(groupId);
+		}
+		
 	}
 }
 
@@ -517,6 +609,18 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 				const gchar *userId = json_object_get_string_member(obj, "userId");
 				const gchar *fullName = json_object_get_string_member(obj, "fullName");
 				PurpleBuddy *buddy = purple_blist_find_buddy(ya->account, userId);
+				
+				// Check that we didn't try to add a funky buddy to the buddy list
+				if (json_object_has_member(obj, "inviteIdentifier")) {
+					const gchar *inviteIdentifier = json_object_get_string_member(obj, "inviteIdentifier");
+					PurpleBuddy *bad_buddy;
+					
+					while ((bad_buddy = purple_blist_find_buddy(ya->account, inviteIdentifier))) {
+						purple_buddy_set_name(bad_buddy, userId);
+					}
+					
+					buddy = purple_blist_find_buddy(ya->account, userId);
+				}
 				
 				if (buddy == NULL) {
 					buddy = purple_buddy_new(ya->account, userId, fullName);
@@ -1569,6 +1673,109 @@ const gchar *who, const gchar *message, PurpleMessageFlags flags)
 	return yahoo_conversation_send_message(ya, group_id, message);
 }
 
+// static const gchar *
+// yahoo_normalise_buddy(const PurpleAccount *account, const gchar *str)
+// {
+	// static gchar buf[26 + 1];
+	// gchar *tmp1, *tmp2;
+
+	// g_return_val_if_fail(str != NULL, NULL);
+
+	// tmp1 = g_ascii_strup(str, -1);
+	// use g_ascii_isalnum on each char
+	// g_snprintf(buf, sizeof(buf), "%26s", tmp1 ? tmp1 : "");
+	// g_free(tmp1);
+
+	// return buf;
+// }
+
+static gchar *
+yahoo_make_base32guid(guint64 id)
+{
+	guchar guid[16];
+	guint64 be_id = GUINT64_TO_BE(id);
+	gchar *base32guid;
+	
+	memset(guid, 0, 8);
+	memmove(guid + 8, &be_id, 8);
+	
+	base32guid = purple_base32_encode(guid, 16);
+	base32guid[26] = 0; // Strip off trailing padding
+	
+	return base32guid;
+}
+
+static void
+yahoo_add_buddy(PurpleConnection *pc, PurpleBuddy *buddy, PurpleGroup *group
+#if PURPLE_VERSION_CHECK(3, 0, 0)
+, const char *message
+#endif
+)
+{
+	YahooAccount *ya = purple_connection_get_protocol_data(pc);
+	JsonObject *data;
+	const gchar *buddy_name = purple_buddy_get_name(buddy);
+	gchar *userId;
+	gchar *groupId;
+	gchar *memberId;
+	gchar *otherMemberId;
+	
+	// If this isn't a 'real' user id, then freak out a little
+	if (strlen(buddy_name) != 26) {
+		//TODO should probably check that its not a 26 character long username/email address
+		gchar *serviceIdentifier = g_strdup_printf("%s:%s", "ymessenger", buddy_name);
+		
+		// Needs to be a valid Base32 GUID
+		userId = yahoo_make_base32guid(ya->opid * 2);
+		data = json_object_new();
+		
+		json_object_set_string_member(data, "msg", "ResolveUser");
+		json_object_set_int_member(data, "opId", ya->opid++);
+		json_object_set_string_member(data, "userId", userId);
+		json_object_set_string_member(data, "serviceIdentifier", serviceIdentifier);
+		
+		yahoo_socket_write_json(ya, data);
+		
+		g_free(serviceIdentifier);
+		
+		purple_buddy_set_name(buddy, userId);
+	} else {
+		userId = g_strdup(buddy_name);
+	}
+	
+	// Needs to be a valid Base32 GUID
+	groupId = yahoo_make_base32guid(ya->opid * 2 + 1);
+	memberId = g_strdup_printf("%012" G_GUINT64_FORMAT "FFFF", ya->opid * 2);
+	otherMemberId = g_strdup_printf("%012" G_GUINT64_FORMAT "FFFF", ya->opid * 2 + 1);
+	data = json_object_new();
+	
+	json_object_set_string_member(data, "msg", "ResolveGroup");
+	json_object_set_int_member(data, "opId", ya->opid++);
+	json_object_set_string_member(data, "groupId", groupId);
+	json_object_set_string_member(data, "memberId", memberId);
+	json_object_set_string_member(data, "otherUserId", userId);
+	json_object_set_string_member(data, "otherMemberId", otherMemberId);
+	
+	yahoo_socket_write_json(ya, data);
+	
+	data = json_object_new();
+	json_object_set_string_member(data, "msg", "EnsureUser");
+	json_object_set_int_member(data, "opId", ya->opid++);
+	json_object_set_string_member(data, "userId", userId);
+	
+	yahoo_socket_write_json(ya, data);
+	
+	g_hash_table_replace(ya->one_to_ones, g_strdup(groupId), g_strdup(userId));
+	g_hash_table_replace(ya->one_to_ones_rev, g_strdup(userId), g_strdup(groupId));
+	
+	purple_blist_node_set_string(PURPLE_BLIST_NODE(buddy), "groupId", groupId);
+	
+	g_free(userId);
+	g_free(groupId);
+	g_free(memberId);
+	g_free(otherMemberId);
+}
+
 
 static const char *
 yahoo_list_icon(PurpleAccount *account, PurpleBuddy *buddy)
@@ -1730,6 +1937,7 @@ plugin_init(PurplePlugin *plugin)
 	prpl_info->get_chat_name = yahoo_get_chat_name;
 	prpl_info->chat_invite = yahoo_chat_invite;
 	prpl_info->chat_send = yahoo_chat_send;
+	prpl_info->add_buddy = yahoo_add_buddy;
 	
 }
 
@@ -1830,6 +2038,12 @@ yahoo_protocol_chat_iface_init(PurpleProtocolChatIface *prpl_info)
 	prpl_info->invite = yahoo_chat_invite;
 }
 
+static void 
+yahoo_protocol_server_iface_init(PurpleProtocolServerIface *prpl_info)
+{
+	prpl_info->add_buddy = yahoo_add_buddy;
+}
+
 static PurpleProtocol *yahoo_protocol;
 
 PURPLE_DEFINE_TYPE_EXTENDED(
@@ -1843,6 +2057,9 @@ PURPLE_DEFINE_TYPE_EXTENDED(
 
 	PURPLE_IMPLEMENT_INTERFACE_STATIC(PURPLE_TYPE_PROTOCOL_PRIVACY_IFACE,
 	                                  yahoo_protocol_privacy_iface_init)
+
+	PURPLE_IMPLEMENT_INTERFACE_STATIC(PURPLE_TYPE_PROTOCOL_SERVER_IFACE,
+	                                  yahoo_protocol_server_iface_init)
 
 );
 
