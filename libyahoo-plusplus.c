@@ -498,6 +498,10 @@ yahoo_process_mutation_op_entity(JsonArray *array, guint index_, JsonNode *eleme
 	JsonArray *entity;
 	gint entity_length;
 	
+	if (json_array_get_length(change_array) < 3) {
+		return;
+	}
+	
 	entity = json_array_get_array_element(change_array, 0);
 	entity_length = json_array_get_length(entity);
 	
