@@ -1220,6 +1220,8 @@ yahoo_socket_write_data(YahooAccount *ya, guchar *data, gsize data_len, guchar t
 	guint len_size = 1;
 	guchar mkey[4] = { 0x12, 0x34, 0x56, 0x78 };
 	
+	purple_debug_info("yahoo", "sending frame: %*s\n", data_len, data);
+	
 	data = yahoo_websocket_mask(mkey, data, data_len);
 	
 	if (data_len > 125) {
