@@ -1170,15 +1170,22 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 				yahoo_restart_channel(ya);
 			} else if (purple_strequal(msg, "InvalidCredentials")) {
 				purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Session expired");
+			} else if (purple_strequal(msg, "ChannelProtocolError")) {
+				//Client skipped ahead (frame.seq=18, numResent=-17, numAcked=0, clientSeq=1)
+				//Client ack 16 exceeds server seq 4
+				
+				ya->seq = 0;
+				ya->ack = 0;
+				yahoo_start_socket(ya);
 			}
 			
 		} else {
-			guint64 seq = json_object_get_int_member(message, "seq");
-			//guint64 ack = json_object_get_int_member(message, "ack");
+			gint64 seq = json_object_get_int_member(message, "seq");
+			gint64 ack = json_object_get_int_member(message, "ack");
 			JsonArray *data = json_object_get_array_member(message, "data");
 			gint64 current_server_time = json_object_get_int_member(message, "time");
 			
-			//ya->seq = ack;
+			ya->seq = MAX(ya->seq, ack);
 			if (json_array_get_length(data)) {
 				ya->ack = seq + 1;
 			} else {
