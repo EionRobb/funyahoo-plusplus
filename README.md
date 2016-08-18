@@ -18,6 +18,7 @@ If you're having trouble logging in, try logging into Yahoo Mail.  For some inex
 
 ### How to set up ###
 Add a new account to Pidgin.  The dropdown list should have a "Yahoo (2016)" option.
+![add account screenshot](https://cloud.githubusercontent.com/assets/1063865/17792148/5a6cc3f2-65f3-11e6-8ec5-420868403038.png)
 
 ### How to install on Windows ###
 Download [libyahoo-plusplus.dll](http://eion.robbmob.com/libyahoo-plusplus.dll) and place into your `Program Files\Pidgin\plugins` folder.  (If you haven't used the Facebook, Skypeweb or Hangouts plugin before you'll also need to download  [libjson-glib-1.0.dll](https://github.com/EionRobb/skype4pidgin/raw/master/skypeweb/libjson-glib-1.0.dll) and place that into `Program Files\Pidgin` - not the plugins folder.)
