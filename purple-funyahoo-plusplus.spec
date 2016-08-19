@@ -50,6 +50,4 @@ rm -rf $RPM_BUILD_ROOT
 
 %changelog
 * Fri Aug 19 2016 Manuel Wolfshant <wolfy@fedoraproject.org> - 0.1-1
-Inital package
-
-
+Initial package
