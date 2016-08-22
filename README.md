@@ -23,6 +23,13 @@ Add a new account to Pidgin.  The dropdown list should have a "Yahoo (2016)" opt
 ### How to install on Windows ###
 Download [libyahoo-plusplus.dll](http://eion.robbmob.com/libyahoo-plusplus.dll) and place into your `Program Files\Pidgin\plugins` folder.  (If you haven't used the Facebook, Skypeweb or Hangouts plugin before you'll also need to download  [libjson-glib-1.0.dll](https://github.com/EionRobb/skype4pidgin/raw/master/skypeweb/libjson-glib-1.0.dll) and place that into `Program Files\Pidgin` - not the plugins folder.)
 
+### How to compile for Linux ###
+```
+sudo apt-get install libpurple-dev libjson-glib-dev libglib2.0-dev git make;
+git clone https://github.com/EionRobb/funyahoo-plusplus.git && cd funyahoo-plusplus;
+make && sudo make install
+```
+
 ### Whats up with the name? ###
 Just a fun jab at some of the forks/clones of Pidgin over the years
 
