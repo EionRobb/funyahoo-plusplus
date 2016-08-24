@@ -921,8 +921,8 @@ yahoo_rpc_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 		
 		yahoo_start_socket(ya);
 	} else if (purple_strequal(msg, "UserMustActivate")) {
-		purple_notify_uri(ya->pc, "https://mail.yahoo.com/");
-		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, _("Please login to the Yahoo webmail first, to continue"));
+		purple_notify_uri(ya->pc, "https://messenger.yahoo.com/");
+		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, _("Please login to the Yahoo messenger website once, to continue"));
 	} else if (purple_strequal(msg, "InvalidCredentials")) {
 		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Session expired");
 	} else {
