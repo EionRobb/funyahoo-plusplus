@@ -1145,7 +1145,7 @@ yahoo_close(PurpleConnection *pc)
 
 //static void yahoo_start_polling(YahooAccount *ya);
 
-static void
+static gboolean
 yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 {
 	JsonParser *parser = json_parser_new();
@@ -1156,7 +1156,7 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 	if (!json_parser_load_from_data(parser, frame, -1, NULL))
 	{
 		purple_debug_error("yahoo", "Error parsing response: %s\n", frame);
-		return;
+		return TRUE;
 	}
 	
 	root = json_parser_get_root(parser);
@@ -1175,8 +1175,9 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 				//Client ack 16 exceeds server seq 4
 				
 				ya->seq = 0;
-				ya->ack = 0;
+				//ya->ack = 0;
 				yahoo_start_socket(ya);
+				return FALSE;
 			}
 			
 		} else {
@@ -1205,6 +1206,7 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 	}
 	
 	g_object_unref(parser);
+	return TRUE;
 }
 
 static guchar *
@@ -1420,12 +1422,12 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 		done_some_reads = TRUE;
 		
 		if (ya->frame_len_progress == ya->frame_len) {
-			yahoo_process_frame(ya, ya->frame);
+			gboolean success = yahoo_process_frame(ya, ya->frame);
 			g_free(ya->frame); ya->frame = NULL;
 			ya->packet_code = 0;
 			ya->frame_len = 0;
 			
-			if (G_UNLIKELY(ya->websocket == NULL)) {
+			if (G_UNLIKELY(ya->websocket == NULL || success == FALSE)) {
 				return;
 			}
 		} else {
