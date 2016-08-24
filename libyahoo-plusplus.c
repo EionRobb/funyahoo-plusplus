@@ -1418,7 +1418,7 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 			if (read_len > 0) {
 				ya->frame_len_progress += read_len;
 			}
-		} while (read_len > 0 && ya->frame_len - ya->frame_len_progress > 0);
+		} while (read_len > 0 && ya->frame_len_progress < ya->frame_len);
 		done_some_reads = TRUE;
 		
 		if (ya->frame_len_progress == ya->frame_len) {
@@ -1766,7 +1766,7 @@ yahoo_make_base32guid(guint64 id)
 	guint64 be_id = GUINT64_TO_BE(id);
 	gchar *base32guid;
 	
-	memset(guid, 0, 8);
+	memset(guid, 0, 16);
 	memmove(guid + 8, &be_id, 8);
 	
 	base32guid = purple_base32_encode(guid, 16);
