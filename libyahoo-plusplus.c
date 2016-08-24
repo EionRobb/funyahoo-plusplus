@@ -1177,6 +1177,8 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 				ya->seq = 0;
 				//ya->ack = 0;
 				yahoo_start_socket(ya);
+				
+				g_object_unref(parser);
 				return FALSE;
 			}
 			
