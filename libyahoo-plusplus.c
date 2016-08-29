@@ -469,7 +469,7 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 		} else {
 			g_string_append(headers, "Content-Type: application/x-www-form-urlencoded\r\n");
 		}
-		g_string_append_printf(headers, "Content-Length: %d\r\n", strlen(postdata));
+		g_string_append_printf(headers, "Content-Length: %ld\r\n", strlen(postdata));
 		g_string_append(headers, "\r\n");
 
 		g_string_append(headers, postdata);
@@ -1231,7 +1231,7 @@ yahoo_socket_write_data(YahooAccount *ya, guchar *data, gsize data_len, guchar t
 	guint len_size = 1;
 	guchar mkey[4] = { 0x12, 0x34, 0x56, 0x78 };
 	
-	purple_debug_info("yahoo", "sending frame: %*s\n", data_len, data);
+	purple_debug_info("yahoo", "sending frame: %*s\n", (int)data_len, data);
 	
 	data = yahoo_websocket_mask(mkey, data, data_len);
 	
