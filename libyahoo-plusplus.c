@@ -469,7 +469,7 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 		} else {
 			g_string_append(headers, "Content-Type: application/x-www-form-urlencoded\r\n");
 		}
-		g_string_append_printf(headers, "Content-Length: %ld\r\n", strlen(postdata));
+		g_string_append_printf(headers, "Content-Length: %" G_GSIZE_FORMAT "\r\n", strlen(postdata));
 		g_string_append(headers, "\r\n");
 
 		g_string_append(headers, postdata);
