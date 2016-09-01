@@ -636,10 +636,7 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 	PurpleGroup *yahoo_group = NULL;
 	const gchar *msg = json_object_get_string_member(obj, "msg");
 	gint64 createdTime = json_object_get_int_member(obj, "createdTime");
-	
-	if (createdTime != 0 && createdTime < ya->last_event_timestamp) {
-		return;
-	}
+	gboolean old_event = (createdTime != 0 && createdTime < ya->last_event_timestamp);
 	
 	if (purple_strequal(msg, "NewEntity")) {
 		JsonArray *key_array = json_object_get_array_member(obj, "key");
@@ -744,7 +741,7 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 				}
 				
 			} else {
-				if (purple_strequal(json_object_get_string_member(obj, "type"), "post")) {
+				if (!old_event && purple_strequal(json_object_get_string_member(obj, "type"), "post")) {
 					gchar *message = purple_markup_escape_text(json_object_get_string_member(obj, "message"), -1);
 					const gchar *user = json_array_get_string_element(json_object_get_array_member(obj, "user"), 1);
 					const gchar *group = json_array_get_string_element(json_object_get_array_member(obj, "group"), 1);
@@ -798,7 +795,7 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 						PurpleChatUserFlags cbflags = json_object_get_boolean_member(obj, "admin") ? PURPLE_CHAT_USER_OP : PURPLE_CHAT_USER_NONE;
 						PurpleChatConversation *chatconv = purple_conversations_find_chat_with_account(groupId, ya->account);
 						
-						if (chatconv == NULL) {
+						if (chatconv == NULL && !old_event) {
 							if (g_hash_table_contains(ya->group_chats, groupId)) {
 								chatconv = purple_serv_got_joined_chat(ya->pc, g_str_hash(groupId), groupId);
 								purple_conversation_set_data(PURPLE_CONVERSATION(chatconv), "groupId", g_strdup(groupId));
