@@ -1431,6 +1431,14 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 					// Pong
 					//who cares
 					return;
+				} else if (ya->packet_code == '{') {
+					// They've provided us a JSON response!
+					purple_debug_error("yahoo", "json response given to websocket channel\n");
+					
+					// Try reconnect
+					yahoo_start_socket(ya);
+					
+					return;
 				}
 				purple_debug_error("yahoo", "unknown websocket error %d\n", ya->packet_code);
 				return;
