@@ -1256,7 +1256,9 @@ yahoo_socket_write_data(YahooAccount *ya, guchar *data, gsize data_len, guchar t
 	guint len_size = 1;
 	guchar mkey[4] = { 0x12, 0x34, 0x56, 0x78 };
 	
-	purple_debug_info("yahoo", "sending frame: %*s\n", (int)data_len, data);
+	if (data_len) {
+		purple_debug_info("yahoo", "sending frame: %*s\n", (int)data_len, data);
+	}
 	
 	data = yahoo_websocket_mask(mkey, data, data_len);
 	
@@ -1393,7 +1395,6 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 				} else if (ya->packet_code == 137) {
 					// Ping
 					gint ping_frame_len;
-					guchar *pong_data;
 					length_code = 0;
 					purple_ssl_read(conn, &length_code, 1);
 					if (length_code <= 125) {
@@ -1406,12 +1407,15 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 						purple_ssl_read(conn, &ping_frame_len, 8);
 						ping_frame_len = GUINT64_FROM_BE(ping_frame_len);
 					}
-					//TODO - dont be dumb
-					pong_data = g_new0(guchar, ping_frame_len);
-					purple_ssl_read(conn, pong_data, ping_frame_len);
-					
-					yahoo_socket_write_data(ya, pong_data, ping_frame_len, 138);
-					g_free(pong_data);
+					if (ping_frame_len) {
+						guchar *pong_data = g_new0(guchar, ping_frame_len);
+						purple_ssl_read(conn, pong_data, ping_frame_len);
+
+						yahoo_socket_write_data(ya, pong_data, ping_frame_len, 138);
+						g_free(pong_data);
+					} else {
+						yahoo_socket_write_data(ya, "", 0, 138);
+					}
 					return;
 				} else if (ya->packet_code == 138) {
 					// Pong
