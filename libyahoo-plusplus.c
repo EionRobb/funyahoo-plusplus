@@ -196,6 +196,7 @@ typedef struct {
 	
 	PurpleSslConnection *websocket;
 	gboolean websocket_header_received;
+	gboolean sync_complete;
 	guchar packet_code;
 	gchar *frame;
 	guint64 frame_len;
@@ -647,7 +648,7 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 	PurpleGroup *yahoo_group = NULL;
 	const gchar *msg = json_object_get_string_member(obj, "msg");
 	gint64 createdTime = json_object_get_int_member(obj, "createdTime");
-	gboolean old_event = (createdTime != 0 && createdTime < ya->last_event_timestamp);
+	gboolean old_event = !ya->sync_complete;
 	
 	if (purple_strequal(msg, "NewEntity")) {
 		JsonArray *key_array = json_object_get_array_member(obj, "key");
@@ -887,6 +888,8 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 		response = json_object_new();
 		json_object_set_string_member(response, "msg", "SyncAck");
 		json_object_set_string_member(response, "pushId", json_object_get_string_member(obj, "pushId"));
+	} else if (purple_strequal(msg, "SyncComplete")) {
+		ya->sync_complete = TRUE;
 	} else if (purple_strequal(msg, "MutationResponse")) {
 		
 		json_array_foreach_element_reverse(json_object_get_array_member(obj, "ops"), yahoo_process_mutation_op, ya);
@@ -904,7 +907,15 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 		}
 	}
 	
-	yahoo_socket_write_json(ya, response);
+	if (response != NULL) {
+		yahoo_socket_write_json(ya, response);
+	}
+}
+
+static void
+yahoo_process_msg_array(JsonArray *array, guint index_, JsonNode *element_node, gpointer user_data)
+{
+	json_array_foreach_element_reverse(json_node_get_array(element_node), yahoo_process_msg, user_data);
 }
 
 static void yahoo_start_socket(YahooAccount *ya);
@@ -1221,7 +1232,7 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 			}
 			
 			if (data && json_array_get_length(data)) {
-				json_array_foreach_element_reverse(json_array_get_array_element(data, 0), yahoo_process_msg, ya);
+				json_array_foreach_element(data, yahoo_process_msg_array, ya);
 			}
 			
 			if (current_server_time) {
