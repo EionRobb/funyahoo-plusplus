@@ -13,7 +13,7 @@ This is not a slight change from the old protocol to a new one, instead, it's a 
 
 [Please don't hate me because they're missing.](https://web.archive.org/web/20160417093742/https://yahoo.uservoice.com/forums/320961)
 
-If you're having trouble logging in, try logging into Yahoo Mail.  For some inexplicable reason, the messenger is linked to that.
+If you're having trouble logging in, try logging into http://messenger.yahoo.com once. It seems to initialize your account in some way.
 
 
 ### How to set up ###
