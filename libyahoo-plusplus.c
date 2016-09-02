@@ -211,6 +211,8 @@ typedef struct {
 	GHashTable *group_chats;     // A store of known multi-user groupId's
 	GHashTable *sent_message_ids;// A store of message id's that we generated from this instance
 	GHashTable *media_urls;      // MediaId -> URL
+
+	GSList *http_conns; /**< PurpleHttpConnection to be cancelled on logout */
 } YahooAccount;
 
 typedef void (*YahooProxyCallbackFunc)(YahooAccount *ya, JsonNode *node, gpointer user_data);
@@ -374,6 +376,8 @@ gpointer user_data, const gchar *url_text, gsize len, const gchar *error_message
 	YahooProxyConnection *conn = user_data;
 	JsonParser *parser = json_parser_new();
 	
+	conn->ya->http_conns = g_slist_remove(conn->ya->http_conns, http_conn);
+
 #if !PURPLE_VERSION_CHECK(3, 0, 0)
 	yahoo_update_cookies(conn->ya, url_text);
 	
@@ -444,7 +448,11 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 	
 	purple_http_request(ya->pc, request, yahoo_response_callback, conn);
 	purple_http_request_unref(request);
+
+	// TODO: add something to ya->http_conns
+
 #else
+	PurpleHttpConnection *http_conn;
 	GString *headers;
 	gchar *host = NULL, *path = NULL, *user = NULL, *password = NULL;
 	int port;
@@ -482,8 +490,11 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 	g_free(user);
 	g_free(password);
 
-	purple_util_fetch_url_request_len_with_account(ya->account, url, FALSE, YAHOO_USERAGENT, TRUE, headers->str, TRUE, 6553500, yahoo_response_callback, conn);
+	http_conn = purple_util_fetch_url_request_len_with_account(ya->account, url, FALSE, YAHOO_USERAGENT, TRUE, headers->str, TRUE, 6553500, yahoo_response_callback, conn);
 	
+	if (http_conn != NULL)
+		ya->http_conns = g_slist_prepend(ya->http_conns, http_conn);
+
 	g_string_free(headers, TRUE);
 #endif
 
@@ -971,6 +982,8 @@ gpointer user_data, const gchar *url_text, gsize len, const gchar *error_message
 	YahooAccount *ya = user_data;
 	GString *postdata = g_string_new("");
 	gchar *crumb = yahoo_string_get_chunk(url_text, len, "<input name=\"_crumb\" type=\"hidden\" value=\"", "\"");
+
+	ya->http_conns = g_slist_remove(ya->http_conns, http_conn);
 	
 #if PURPLE_VERSION_CHECK(3, 0, 0)
 	yahoo_update_cookies(ya, purple_http_response_get_headers_by_name(response, "Set-Cookie"));
@@ -1049,6 +1062,7 @@ void
 yahoo_login(PurpleAccount *account)
 {
 	YahooAccount *ya;
+	PurpleHttpConnection *http_conn;
 	PurpleConnection *pc = purple_account_get_connection(account);
 	GString *preauth_url = g_string_new("https://login.yahoo.com/?");
 	
@@ -1077,13 +1091,18 @@ yahoo_login(PurpleAccount *account)
 	
 	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
 #if !PURPLE_VERSION_CHECK(3, 0, 0)
-	purple_util_fetch_url_request_len_with_account(account, preauth_url->str, FALSE, YAHOO_USERAGENT, FALSE, NULL, TRUE, 6553500, yahoo_preauth_callback, ya);
+	http_conn = purple_util_fetch_url_request_len_with_account(account, preauth_url->str, FALSE, YAHOO_USERAGENT, FALSE, NULL, TRUE, 6553500, yahoo_preauth_callback, ya);
+
+	if (http_conn != NULL)
+		ya->http_conns = g_slist_prepend(ya->http_conns, http_conn);
 #else
 	{
 		PurpleHttpRequest *request = purple_http_request_new(preauth_url->str);
 		purple_http_request_header_set(request, "User-Agent", YAHOO_USERAGENT);
 		purple_http_request(ya->pc, request, yahoo_preauth_callback, ya);
 		purple_http_request_unref(request);
+
+		// TODO: add something to ya->http_conns
 	}
 #endif
 	
@@ -1117,6 +1136,15 @@ yahoo_close(PurpleConnection *pc)
 	g_hash_table_unref(ya->sent_message_ids);
 	g_hash_table_remove_all(ya->media_urls);
 	g_hash_table_unref(ya->media_urls);
+
+#if !PURPLE_VERSION_CHECK(3, 0, 0)
+	while (ya->http_conns) {
+		purple_util_fetch_url_cancel(ya->http_conns->data);
+		ya->http_conns = g_slist_delete_link(ya->http_conns, ya->http_conns);
+	}
+#else
+	// TODO: cancel ya->http_conns here
+#endif
 	
 	g_hash_table_destroy(ya->cookie_table); ya->cookie_table = NULL;
 	g_free(ya->frame); ya->frame = NULL;
