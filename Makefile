@@ -9,7 +9,7 @@ WIN32_CC ?= $(WIN32_DEV_TOP)/mingw/bin/gcc
 PROTOC_C ?= protoc-c
 PKG_CONFIG ?= pkg-config
 
-CFLAGS	?= -O2 -g -pipe
+CFLAGS	?= -O2 -g -pipe -Wall
 LDFLAGS ?= -Wl,-z,relro
 
 # Do some nasty OS and purple version detection

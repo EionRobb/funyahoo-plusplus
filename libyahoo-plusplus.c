@@ -1425,7 +1425,7 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 						yahoo_socket_write_data(ya, pong_data, ping_frame_len, 138);
 						g_free(pong_data);
 					} else {
-						yahoo_socket_write_data(ya, "", 0, 138);
+						yahoo_socket_write_data(ya, (guchar *) "", 0, 138);
 					}
 					return;
 				} else if (ya->packet_code == 138) {
