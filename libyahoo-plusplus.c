@@ -1103,19 +1103,18 @@ yahoo_login(PurpleAccount *account)
 	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
 #if !PURPLE_VERSION_CHECK(3, 0, 0)
 	http_conn = purple_util_fetch_url_request_len_with_account(account, preauth_url->str, FALSE, YAHOO_USERAGENT, FALSE, NULL, TRUE, 6553500, yahoo_preauth_callback, ya);
-
-	if (http_conn != NULL)
-		ya->http_conns = g_slist_prepend(ya->http_conns, http_conn);
 #else
 	{
 		PurpleHttpRequest *request = purple_http_request_new(preauth_url->str);
 		purple_http_request_header_set(request, "User-Agent", YAHOO_USERAGENT);
-		purple_http_request(ya->pc, request, yahoo_preauth_callback, ya);
+		http_conn = purple_http_request(ya->pc, request, yahoo_preauth_callback, ya);
 		purple_http_request_unref(request);
-
-		// TODO: add something to ya->http_conns
 	}
 #endif
+	
+	if (http_conn != NULL) {
+		ya->http_conns = g_slist_prepend(ya->http_conns, http_conn);
+	}
 	
 	g_string_free(preauth_url, TRUE);
 	
