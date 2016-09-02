@@ -827,7 +827,7 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 					if (chatconv != NULL) {
 						purple_chat_conversation_remove_user(chatconv, userId, message);
 					}
-				} else if (purple_strequal(subkey, "Item") && purple_strequal(json_array_get_string_element(key_array, 4), "media")) {
+				} else if (!old_event && purple_strequal(subkey, "Item") && purple_strequal(json_array_get_string_element(key_array, 4), "media")) {
 					//TODO split this out for the regular message receive handling code
 					
 					// Received a message with a photo
