@@ -205,7 +205,6 @@ typedef struct {
 	gint64 seq;
 	gint64 ack;
 	gint64 opid;
-	gint64 last_event_timestamp;
 	
 	GHashTable *one_to_ones;     // A store of known groupId's->userId's
 	GHashTable *one_to_ones_rev; // A store of known userId's->groupId's
@@ -1089,11 +1088,6 @@ yahoo_login(PurpleAccount *account)
 	ya->ack = 1;
 	ya->seq = 1;
 	
-	ya->last_event_timestamp = purple_account_get_int(ya->account, "last_event_timestamp_high", 0);
-	if (ya->last_event_timestamp != 0) {
-		ya->last_event_timestamp = (ya->last_event_timestamp << 32) | ((guint64) purple_account_get_int(ya->account, "last_event_timestamp_low", 0) & 0xFFFFFFFF);
-	}
-	
 	ya->one_to_ones = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	ya->one_to_ones_rev = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	ya->group_chats = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
@@ -1221,7 +1215,6 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 			gint64 seq = json_object_get_int_member(message, "seq");
 			gint64 ack = json_object_get_int_member(message, "ack");
 			JsonArray *data = json_object_get_array_member(message, "data");
-			gint64 current_server_time = json_object_get_int_member(message, "time");
 			
 			ya->seq = MAX(ya->seq, ack);
 			if (json_array_get_length(data)) {
@@ -1232,12 +1225,6 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 			
 			if (data && json_array_get_length(data)) {
 				json_array_foreach_element(data, yahoo_process_msg_array, ya);
-			}
-			
-			if (current_server_time) {
-				purple_account_set_int(ya->account, "last_event_timestamp_high", current_server_time >> 32);
-				purple_account_set_int(ya->account, "last_event_timestamp_low", current_server_time & 0xFFFFFFFF);
-				ya->last_event_timestamp = current_server_time;
 			}
 		}
 	}
