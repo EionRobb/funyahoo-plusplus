@@ -1,0 +1,17 @@
+Source: funyahoo-plusplus
+Priority: optional
+Section: libs
+Maintainer: Timothy E. Harris <maintainer@mepiscommunity.org>
+Build-Depends: debhelper (>= 7),
+               libpurple-dev,
+               libjson-glib-dev,
+               libglib2.0-dev
+Homepage: https://github.com/EionRobb/funyahoo-plusplus
+Standards-Version: 3.9.1
+
+Package: libfunyahoo-plusplus
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: 2016 Yahoo Messenger protocol C library
+ A replacement Yahoo prpl (protocol plugin) for Pidgin/libpurple compatible with
+ the new protocol enforced by Yahoo since Sept 2016
