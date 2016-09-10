@@ -976,6 +976,9 @@ yahoo_restart_channel(YahooAccount *ya)
 	
 	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
 	yahoo_fetch_url(ya, "https://prod.iris.yahoo.com/prod/rpc?wait=1&v=1", rpcdata, yahoo_rpc_callback, NULL);
+
+	ya->seq = 0;
+	ya->ack = 1;
 	
 	g_free(rpcdata);
 }
