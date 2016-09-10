@@ -215,6 +215,7 @@ typedef struct {
 	GHashTable *media_urls;      // MediaId -> URL
 
 	GSList *http_conns; /**< PurpleHttpConnection to be cancelled on logout */
+	gint frames_since_reconnect;
 } YahooAccount;
 
 typedef void (*YahooProxyCallbackFunc)(YahooAccount *ya, JsonNode *node, gpointer user_data);
@@ -1210,7 +1211,15 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 				
 				ya->seq = 0;
 				//ya->ack = 0;
-				yahoo_start_socket(ya);
+
+				if (ya->frames_since_reconnect < 2) {
+					char *error = g_strdup_printf("Server error: \"%s\". If this keeps happening, report a bug. Try to include the debug window messages before the error happens.",
+						json_object_get_string_member(message, "reason"));
+					purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, error);
+					g_free(error);
+				} else {
+					yahoo_start_socket(ya);
+				}
 				
 				g_object_unref(parser);
 				return FALSE;
@@ -1233,6 +1242,7 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 			}
 		}
 	}
+	ya->frames_since_reconnect += 1;
 	
 	g_object_unref(parser);
 	return TRUE;
@@ -1477,11 +1487,14 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 	}
 	
 	if ((done_some_reads == FALSE && read_len <= 0 && errno != EAGAIN && errno != EINTR)) {
-		//purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Lost connection to server");
-		
 		purple_debug_error("yahoo", "got errno %d, read_len %d from websocket thread\n", errno, read_len);
-		// Try reconnect
-		yahoo_start_socket(ya);
+
+		if (ya->frames_since_reconnect < 2) {
+			purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Lost connection to server");
+		} else {
+			// Try reconnect
+			yahoo_start_socket(ya);
+		}
 	}
 }
 
@@ -1547,7 +1560,8 @@ yahoo_start_socket(YahooAccount *ya)
 	g_free(ya->frame); ya->frame = NULL;
 	ya->packet_code = 0;
 	ya->frame_len = 0;
-			
+	ya->frames_since_reconnect = 0;
+
 	ya->websocket = purple_ssl_connect(ya->account, "prod.iris.yahoo.com", 443, yahoo_socket_connected, yahoo_socket_failed, ya);
 }
 
