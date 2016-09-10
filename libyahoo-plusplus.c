@@ -100,7 +100,9 @@ json_array_foreach_element_reverse (JsonArray        *array,
 #endif
 
 #define YAHOO_PLUGIN_ID "prpl-eionrobb-funyahoo-plusplus"
+#ifndef YAHOO_PLUGIN_VERSION
 #define YAHOO_PLUGIN_VERSION "0.9"
+#endif
 #define YAHOO_PLUGIN_WEBSITE "https://github.com/EionRobb/funyahoo-plusplus"
 
 #define YAHOO_USERAGENT "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.103 Safari/537.36"
