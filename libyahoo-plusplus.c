@@ -1485,8 +1485,12 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 			return;
 		}
 	}
-	
-	if ((done_some_reads == FALSE && read_len <= 0 && errno != EAGAIN && errno != EINTR)) {
+
+	if (done_some_reads == FALSE && read_len <= 0) {
+		if (read_len < 0 && errno == EAGAIN) {
+			return;
+		}
+
 		purple_debug_error("yahoo", "got errno %d, read_len %d from websocket thread\n", errno, read_len);
 
 		if (ya->frames_since_reconnect < 2) {
