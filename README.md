@@ -21,7 +21,7 @@ Add a new account to Pidgin.  The dropdown list should have a "Yahoo (2016)" opt
 ![add account screenshot](https://cloud.githubusercontent.com/assets/1063865/17792148/5a6cc3f2-65f3-11e6-8ec5-420868403038.png)
 
 ### How to install on Windows ###
-Download [libyahoo-plusplus.dll](http://eion.robbmob.com/libyahoo-plusplus.dll) and place into your `Program Files\Pidgin\plugins` folder.  (If you haven't used the Facebook, Skypeweb or Hangouts plugin before you'll also need to download  [libjson-glib-1.0.dll](https://github.com/EionRobb/skype4pidgin/raw/master/skypeweb/libjson-glib-1.0.dll) and place that into `Program Files\Pidgin` - not the plugins folder.)
+Download [libyahoo-plusplus.dll](http://dequis.org/libyahoo-plusplus.dll) and place into your `Program Files\Pidgin\plugins` folder.  (If you haven't used the Facebook, Skypeweb or Hangouts plugin before you'll also need to download  [libjson-glib-1.0.dll](https://github.com/EionRobb/skype4pidgin/raw/master/skypeweb/libjson-glib-1.0.dll) and place that into `Program Files\Pidgin` - not the plugins folder.)
 
 ### How to compile for Linux ###
 ```
@@ -29,6 +29,10 @@ sudo apt-get install libpurple-dev libjson-glib-dev libglib2.0-dev git make;
 git clone https://github.com/EionRobb/funyahoo-plusplus.git && cd funyahoo-plusplus;
 make && sudo make install
 ```
+### How to compile for windows ###
+You probably don't want to do this, but follow [these instructions](https://developer.pidgin.im/wiki/BuildingWinPidgin) to build pidgin and get a working build environment, then adjust the first few lines of the makefile to match your paths (ignore pidgin3 stuff) and type `make` to get your dll. Good luck with that.
+
+Just use the binaries instead.
 
 ### Whats up with the name? ###
 Just a fun jab at some of the forks/clones of Pidgin over the years
