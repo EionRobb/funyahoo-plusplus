@@ -723,7 +723,8 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 			if (subkey == NULL) {
 				// New group
 				const gchar *groupId = json_object_get_string_member(obj, "groupId");
-				if (json_object_get_boolean_member(obj, "defaultGroup")) {
+				gint64 memberCount = json_object_get_int_member(obj, "memberCount");
+				if (json_object_get_boolean_member(obj, "defaultGroup") && memberCount == 2) {
 					const gchar *otherUser = json_array_get_string_element(json_object_get_array_member(obj, "defaultGroupOtherUser"), 1);
 					PurpleBuddy *buddy = purple_blist_find_buddy(ya->account, otherUser);
 					
@@ -734,7 +735,7 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 					if (buddy != NULL) {
 						purple_blist_node_set_string(PURPLE_BLIST_NODE(buddy), "groupId", groupId);
 					}
-				} else {
+				} else if (memberCount > 2) {
 					PurpleChat *chat = purple_blist_find_chat(ya->account, groupId);
 					const gchar *name = json_object_get_string_member(obj, "name");
 					
