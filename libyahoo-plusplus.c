@@ -891,8 +891,6 @@ yahoo_process_msg(JsonArray *array, guint index_, JsonNode *element_node, gpoint
 		response = json_object_new();
 		json_object_set_string_member(response, "msg", "SyncAck");
 		json_object_set_string_member(response, "pushId", json_object_get_string_member(obj, "pushId"));
-	} else if (purple_strequal(msg, "SyncComplete")) {
-		ya->sync_complete = TRUE;
 	} else if (purple_strequal(msg, "MutationResponse")) {
 		
 		json_array_foreach_element_reverse(json_object_get_array_member(obj, "ops"), yahoo_process_mutation_op, ya);
@@ -1241,6 +1239,8 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 			if (data && json_array_get_length(data)) {
 				json_array_foreach_element(data, yahoo_process_msg_array, ya);
 			}
+
+			ya->sync_complete = TRUE;
 		}
 	}
 	ya->frames_since_reconnect += 1;
