@@ -1230,11 +1230,7 @@ yahoo_process_frame(YahooAccount *ya, const gchar *frame)
 			JsonArray *data = json_object_get_array_member(message, "data");
 			
 			ya->seq = MAX(ya->seq, ack);
-			if (json_array_get_length(data)) {
-				ya->ack = seq + 1;
-			} else {
-				ya->ack = seq;
-			}
+			ya->ack = seq + json_array_get_length(data);
 			
 			if (data && json_array_get_length(data)) {
 				json_array_foreach_element(data, yahoo_process_msg_array, ya);
