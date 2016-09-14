@@ -216,6 +216,7 @@ typedef struct {
 
 	GSList *http_conns; /**< PurpleHttpConnection to be cancelled on logout */
 	gint frames_since_reconnect;
+	GSList *pending_writes;
 } YahooAccount;
 
 typedef void (*YahooProxyCallbackFunc)(YahooAccount *ya, JsonNode *node, gpointer user_data);
@@ -1154,6 +1155,11 @@ yahoo_close(PurpleConnection *pc)
 #else
 	// TODO: cancel ya->http_conns here
 #endif
+
+	while (ya->pending_writes) {
+		json_object_unref(ya->pending_writes->data);
+		ya->pending_writes = g_slist_delete_link(ya->pending_writes, ya->pending_writes);
+	}
 	
 	g_hash_table_destroy(ya->cookie_table); ya->cookie_table = NULL;
 	g_free(ya->frame); ya->frame = NULL;
@@ -1320,9 +1326,8 @@ yahoo_socket_write_json(YahooAccount *ya, JsonObject *data)
 	
 	if (ya->websocket == NULL) {
 		if (data != NULL) {
-			json_object_unref(data);
+			ya->pending_writes = g_slist_append(ya->pending_writes, data);
 		}
-		//TODO error?
 		return;
 	}
 	
@@ -1389,6 +1394,12 @@ yahoo_socket_got_data(gpointer userdata, PurpleSslConnection *conn, PurpleInputC
 		
 		ya->websocket_header_received = TRUE;
 		done_some_reads = TRUE;
+
+		/* flush stuff that we attempted to send before the websocket was ready */
+		while (ya->pending_writes) {
+			yahoo_socket_write_json(ya, ya->pending_writes->data);
+			ya->pending_writes = g_slist_delete_link(ya->pending_writes, ya->pending_writes);
+		}
 	}
 	
 	while(ya->frame || (read_len = purple_ssl_read(conn, &ya->packet_code, 1)) == 1) {
