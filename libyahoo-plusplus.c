@@ -1074,7 +1074,7 @@ yahoo_build_groups_from_blist(YahooAccount *ya)
 
 static void yahoo_blist_node_removed(PurpleBlistNode *node);
 
-void
+static void
 yahoo_login(PurpleAccount *account)
 {
 	YahooAccount *ya;
