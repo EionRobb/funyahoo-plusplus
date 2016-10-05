@@ -1933,6 +1933,13 @@ yahoo_status_types(PurpleAccount *account)
 	status = purple_status_type_new_full(PURPLE_STATUS_OFFLINE, NULL, "Offline", TRUE, TRUE, FALSE);
 	types = g_list_append(types, status);
 	
+	/* Workaround for a bitlbee bug up to bitlbee 3.4.2
+	 * Remove this if yahoo ever adds an away state. */
+	if (g_strcmp0(purple_core_get_ui(), "BitlBee") == 0) {
+		status = purple_status_type_new_full(PURPLE_STATUS_AWAY, NULL, NULL, FALSE, FALSE, FALSE);
+		types = g_list_append(types, status);
+	}
+
 	return types;
 }
 
