@@ -1147,14 +1147,14 @@ yahoo_close(PurpleConnection *pc)
 	g_hash_table_remove_all(ya->media_urls);
 	g_hash_table_unref(ya->media_urls);
 
-#if !PURPLE_VERSION_CHECK(3, 0, 0)
 	while (ya->http_conns) {
+#	if !PURPLE_VERSION_CHECK(3, 0, 0)
 		purple_util_fetch_url_cancel(ya->http_conns->data);
+#	else
+		purple_http_conn_cancel(ya->http_conns->data);
+#	endif
 		ya->http_conns = g_slist_delete_link(ya->http_conns, ya->http_conns);
 	}
-#else
-	// TODO: cancel ya->http_conns here
-#endif
 
 	while (ya->pending_writes) {
 		json_object_unref(ya->pending_writes->data);
