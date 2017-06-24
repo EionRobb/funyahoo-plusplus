@@ -19,10 +19,6 @@
 // Glib
 #include <glib.h>
 
-#if !GLIB_CHECK_VERSION(2, 32, 0)
-#define g_hash_table_contains(hash_table, key) g_hash_table_lookup_extended(hash_table, key, NULL, NULL)
-#endif /* 2.32.0 */
-
 static gboolean
 g_str_insensitive_equal(gconstpointer v1, gconstpointer v2)
 {
@@ -86,9 +82,7 @@ json_array_foreach_element_reverse (JsonArray        *array,
 
 
 #include <purple.h>
-#if PURPLE_VERSION_CHECK(3, 0, 0)
-#include <http.h>
-#endif
+#include "http.h"
 
 #ifndef PURPLE_PLUGINS
 #	define PURPLE_PLUGINS
@@ -112,78 +106,16 @@ json_array_foreach_element_reverse (JsonArray        *array,
 #define YAHOO_PRETEND_VERSION "929"
 
 
+#include "purplecompat.h"
+
 // Purple2 compat functions
 #if !PURPLE_VERSION_CHECK(3, 0, 0)
 
-#define purple_connection_error                 purple_connection_error_reason
-#define PURPLE_CONNECTION_CONNECTING       PURPLE_CONNECTING
-#define PURPLE_CONNECTION_CONNECTED        PURPLE_CONNECTED
-#define purple_blist_find_group        purple_find_group
-#define PurpleProtocolChatEntry  struct proto_chat_entry
-#define PurpleChatConversation             PurpleConvChat
-#define PurpleIMConversation               PurpleConvIm
-#define purple_conversations_find_chat_with_account(id, account) \
-		PURPLE_CONV_CHAT(purple_find_conversation_with_account(PURPLE_CONV_TYPE_CHAT, id, account))
-#define purple_chat_conversation_has_left     purple_conv_chat_has_left
-#define PURPLE_CONVERSATION(chatorim)         (chatorim == NULL ? NULL : chatorim->conv)
-#define PURPLE_IM_CONVERSATION(conv)          PURPLE_CONV_IM(conv)
-#define PURPLE_CHAT_CONVERSATION(conv)        PURPLE_CONV_CHAT(conv)
-#define purple_serv_got_joined_chat(pc, id, name)  PURPLE_CONV_CHAT(serv_got_joined_chat(pc, id, name))
-#define purple_conversations_find_chat(pc, id)  PURPLE_CONV_CHAT(purple_find_chat(pc, id))
-#define purple_serv_got_chat_in                    serv_got_chat_in
-#define purple_chat_conversation_add_user     purple_conv_chat_add_user
-#define purple_chat_conversation_remove_user  purple_conv_chat_remove_user
-#define PurpleChatUserFlags  PurpleConvChatBuddyFlags
-#define PURPLE_CHAT_USER_NONE     PURPLE_CBFLAGS_NONE
-#define PURPLE_CHAT_USER_OP       PURPLE_CBFLAGS_OP
-#define purple_conversation_get_connection      purple_conversation_get_gc
-#define purple_chat_conversation_get_id         purple_conv_chat_get_id
-#define PURPLE_CMD_FLAG_PROTOCOL_ONLY  PURPLE_CMD_FLAG_PRPL_ONLY
-#define PURPLE_IS_BUDDY                PURPLE_BLIST_NODE_IS_BUDDY
-#define PURPLE_IS_CHAT                 PURPLE_BLIST_NODE_IS_CHAT
-#define purple_chat_get_name_only      purple_chat_get_name
-#define purple_blist_find_buddy        purple_find_buddy
-#define purple_serv_got_alias                      serv_got_alias
-#define purple_account_set_private_alias    purple_account_set_alias
-#define purple_account_get_private_alias    purple_account_get_alias
-#define purple_protocol_got_user_status		purple_prpl_got_user_status
-#define purple_serv_got_im                         serv_got_im
-#define purple_conversations_find_im_with_account(name, account)  \
-		PURPLE_CONV_IM(purple_find_conversation_with_account(PURPLE_CONV_TYPE_IM, name, account))
-#define purple_im_conversation_new(account, from) PURPLE_CONV_IM(purple_conversation_new(PURPLE_CONV_TYPE_IM, account, from))
-#define PurpleMessage  PurpleConvMessage
-#define purple_message_set_time(msg, time)  ((msg)->when = (time))
-#define purple_conversation_write_message(conv, msg)  purple_conversation_write(conv, msg->who, msg->what, msg->flags, msg->when)
-static inline PurpleMessage *
-purple_message_new_outgoing(const gchar *who, const gchar *contents, PurpleMessageFlags flags)
-{
-	PurpleMessage *message = g_new0(PurpleMessage, 1);
-	
-	message->who = g_strdup(who);
-	message->what = g_strdup(contents);
-	message->flags = flags;
-	message->when = time(NULL);
-	
-	return message;
-}
-static inline void
-purple_message_destroy(PurpleMessage *message)
-{
-	g_free(message->who);
-	g_free(message->what);
-	g_free(message);
-}
+void _purple_socket_init(void);
+void _purple_socket_uninit(void);
 
-#define purple_account_privacy_deny_add     purple_privacy_deny_add
-#define purple_account_privacy_deny_remove  purple_privacy_deny_remove
-#define PurpleHttpConnection  PurpleUtilFetchUrlData
 #define purple_buddy_set_name  purple_blist_rename_buddy
 
-#else
-// Purple3 helper functions
-#define purple_conversation_set_data(conv, key, value)  g_object_set_data(G_OBJECT(conv), key, value)
-#define purple_conversation_get_data(conv, key)         g_object_get_data(G_OBJECT(conv), key)
-#define purple_message_destroy          g_object_unref
 #endif
 
 
@@ -289,7 +221,6 @@ yahoo_string_get_chunk(const gchar *haystack, gsize len, const gchar *start, con
 	return g_strndup(chunk_start, chunk_end - chunk_start);
 }
 
-#if PURPLE_VERSION_CHECK(3, 0, 0)
 static void
 yahoo_update_cookies(YahooAccount *ya, const GList *cookie_headers)
 {
@@ -314,38 +245,6 @@ yahoo_update_cookies(YahooAccount *ya, const GList *cookie_headers)
 	}
 }
 
-#else
-static void
-yahoo_update_cookies(YahooAccount *ya, const gchar *headers)
-{
-	const gchar *cookie_start;
-	const gchar *cookie_end;
-	gchar *cookie_name;
-	gchar *cookie_value;
-	int header_len;
-
-	g_return_if_fail(headers != NULL);
-
-	header_len = strlen(headers);
-
-	/* look for the next "Set-Cookie: " */
-	/* grab the data up until ';' */
-	cookie_start = headers;
-	while ((cookie_start = strstr(cookie_start, "\r\nSet-Cookie: ")) && (cookie_start - headers) < header_len)
-	{
-		cookie_start += 14;
-		cookie_end = strchr(cookie_start, '=');
-		cookie_name = g_strndup(cookie_start, cookie_end-cookie_start);
-		cookie_start = cookie_end + 1;
-		cookie_end = strchr(cookie_start, ';');
-		cookie_value= g_strndup(cookie_start, cookie_end-cookie_start);
-		cookie_start = cookie_end;
-
-		g_hash_table_replace(ya->cookie_table, cookie_name, cookie_value);
-	}
-}
-#endif
-
 static void
 yahoo_cookie_foreach_cb(gchar *cookie_name, gchar *cookie_value, GString *str)
 {
@@ -365,16 +264,8 @@ yahoo_cookies_to_string(YahooAccount *ya)
 }
 
 static void
-yahoo_response_callback(PurpleHttpConnection *http_conn, 
-#if PURPLE_VERSION_CHECK(3, 0, 0)
-PurpleHttpResponse *response, gpointer user_data)
+yahoo_response_callback(PurpleHttpConnection *http_conn, PurpleHttpResponse *response, gpointer user_data)
 {
-	gsize len;
-	const gchar *url_text = purple_http_response_get_data(response, &len);
-#else
-gpointer user_data, const gchar *url_text, gsize len, const gchar *error_message)
-{
-#endif
 	const gchar *body;
 	gsize body_len;
 	YahooProxyConnection *conn = user_data;
@@ -382,17 +273,9 @@ gpointer user_data, const gchar *url_text, gsize len, const gchar *error_message
 	
 	conn->ya->http_conns = g_slist_remove(conn->ya->http_conns, http_conn);
 
-#if !PURPLE_VERSION_CHECK(3, 0, 0)
-	yahoo_update_cookies(conn->ya, url_text);
-	
-	body = g_strstr_len(url_text, len, "\r\n\r\n");
-	body_len = len - (body - url_text);
-#else
 	yahoo_update_cookies(conn->ya, purple_http_response_get_headers_by_name(response, "Set-Cookie"));
 
-	body = url_text;
-	body_len = len;
-#endif
+	body = purple_http_response_get_data(response, &body_len);
 	
 	if (!json_parser_load_from_data(parser, body, body_len, NULL))
 	{
@@ -432,8 +315,6 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 	
 	purple_debug_info("yahoo", "Fetching url %s\n", url);
 
-#if PURPLE_VERSION_CHECK(3, 0, 0)
-	
 	PurpleHttpRequest *request = purple_http_request_new(url);
 	purple_http_request_header_set(request, "Accept", "*/*");
 	purple_http_request_header_set(request, "User-Agent", YAHOO_USERAGENT);
@@ -455,52 +336,8 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 
 	// TODO: add something to ya->http_conns
 
-#else
-	PurpleHttpConnection *http_conn;
-	GString *headers;
-	gchar *host = NULL, *path = NULL, *user = NULL, *password = NULL;
-	int port;
-	purple_url_parse(url, &host, &port, &path, &user, &password);
-	
-	headers = g_string_new(NULL);
-	
-	//Use the full 'url' until libpurple can handle path's longer than 256 chars
-	g_string_append_printf(headers, "%s /%s HTTP/1.0\r\n", (postdata ? "POST" : "GET"), path);
-	//g_string_append_printf(headers, "%s %s HTTP/1.0\r\n", (postdata ? "POST" : "GET"), url);
-	g_string_append_printf(headers, "Connection: close\r\n");
-	g_string_append_printf(headers, "Host: %s\r\n", host);
-	g_string_append_printf(headers, "Accept: */*\r\n");
-	g_string_append_printf(headers, "User-Agent: " YAHOO_USERAGENT "\r\n");
-	g_string_append_printf(headers, "Cookie: %s\r\n", cookies);
-
-	if (postdata) {
-		purple_debug_info("yahoo", "With postdata %s\n", postdata);
-		
-		if (postdata[0] == '{') {
-			g_string_append(headers, "Content-Type: application/json\r\n");
-		} else {
-			g_string_append(headers, "Content-Type: application/x-www-form-urlencoded\r\n");
-		}
-		g_string_append_printf(headers, "Content-Length: %" G_GSIZE_FORMAT "\r\n", strlen(postdata));
-		g_string_append(headers, "\r\n");
-
-		g_string_append(headers, postdata);
-	} else {
-		g_string_append(headers, "\r\n");
-	}
-
-	g_free(host);
-	g_free(path);
-	g_free(user);
-	g_free(password);
-
-	http_conn = purple_util_fetch_url_request_len_with_account(ya->account, url, FALSE, YAHOO_USERAGENT, TRUE, headers->str, TRUE, 6553500, yahoo_response_callback, conn);
-	
-	if (http_conn != NULL)
-		ya->http_conns = g_slist_prepend(ya->http_conns, http_conn);
-
-	g_string_free(headers, TRUE);
-#endif
+	//if (http_conn != NULL)
+	//	ya->http_conns = g_slist_prepend(ya->http_conns, http_conn);
 
 	g_free(cookies);
 }
@@ -985,27 +822,18 @@ yahoo_restart_channel(YahooAccount *ya)
 }
 
 static void
-yahoo_preauth_callback(PurpleHttpConnection *http_conn, 
-#if PURPLE_VERSION_CHECK(3, 0, 0)
-PurpleHttpResponse *response, gpointer user_data)
+yahoo_preauth_callback(PurpleHttpConnection *http_conn, PurpleHttpResponse *response, gpointer user_data)
 {
 	gsize len;
 	const gchar *url_text = purple_http_response_get_data(response, &len);
-#else
-gpointer user_data, const gchar *url_text, gsize len, const gchar *error_message)
-{
-#endif
 	YahooAccount *ya = user_data;
 	GString *postdata = g_string_new("");
 	gchar *crumb = yahoo_string_get_chunk(url_text, len, "<input name=\"_crumb\" type=\"hidden\" value=\"", "\"");
 
 	ya->http_conns = g_slist_remove(ya->http_conns, http_conn);
 	
-#if PURPLE_VERSION_CHECK(3, 0, 0)
 	yahoo_update_cookies(ya, purple_http_response_get_headers_by_name(response, "Set-Cookie"));
-#else
-	yahoo_update_cookies(ya, url_text);
-#endif
+
 	if (g_hash_table_lookup(ya->cookie_table, "B") == NULL) {
 		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Couldn't get login cookies");
 		return;
@@ -1101,16 +929,12 @@ yahoo_login(PurpleAccount *account)
 	ya->media_urls = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	
 	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
-#if !PURPLE_VERSION_CHECK(3, 0, 0)
-	http_conn = purple_util_fetch_url_request_len_with_account(account, preauth_url->str, FALSE, YAHOO_USERAGENT, FALSE, NULL, TRUE, 6553500, yahoo_preauth_callback, ya);
-#else
 	{
 		PurpleHttpRequest *request = purple_http_request_new(preauth_url->str);
 		purple_http_request_header_set(request, "User-Agent", YAHOO_USERAGENT);
 		http_conn = purple_http_request(ya->pc, request, yahoo_preauth_callback, ya);
 		purple_http_request_unref(request);
 	}
-#endif
 	
 	if (http_conn != NULL) {
 		ya->http_conns = g_slist_prepend(ya->http_conns, http_conn);
@@ -1148,12 +972,7 @@ yahoo_close(PurpleConnection *pc)
 	g_hash_table_unref(ya->media_urls);
 
 	while (ya->http_conns) {
-#	if !PURPLE_VERSION_CHECK(3, 0, 0)
-		purple_util_fetch_url_cancel(ya->http_conns->data);
-#	else
 		purple_http_conn_cancel(ya->http_conns->data);
-#	endif
-		ya->http_conns = g_slist_delete_link(ya->http_conns, ya->http_conns);
 	}
 
 	while (ya->pending_writes) {
@@ -2022,12 +1841,18 @@ plugin_unload(PurplePlugin *plugin, GError **error)
 static gboolean
 libpurple2_plugin_load(PurplePlugin *plugin)
 {
+	_purple_socket_init();
+	purple_http_init();
+
 	return plugin_load(plugin, NULL);
 }
 
 static gboolean
 libpurple2_plugin_unload(PurplePlugin *plugin)
 {
+	_purple_socket_uninit();
+	purple_http_uninit();
+
 	return plugin_unload(plugin, NULL);
 }
 
