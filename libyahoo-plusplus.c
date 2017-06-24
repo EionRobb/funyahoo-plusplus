@@ -954,11 +954,11 @@ yahoo_rpc_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 }
 	
 static void
-yahoo_auth_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
+yahoo_auth_r3_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 {
-	JsonObject *obj = json_node_get_object(node);
+	JsonObject *obj = NULL; //json_node_get_object(node);
 	
-	if (purple_strequal(json_object_get_string_member(obj, "status"), "error")) {
+	if (0 && purple_strequal(json_object_get_string_member(obj, "status"), "error")) {
 		if (purple_strequal(json_object_get_string_member(obj, "code"), "1212")) {
 			purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_AUTHENTICATION_FAILED,  json_object_get_string_member(obj, "message"));
 		} else {
@@ -987,7 +987,47 @@ yahoo_restart_channel(YahooAccount *ya)
 }
 
 static void
-yahoo_preauth_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
+yahoo_auth_r2_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
+{
+	JsonObject *obj = json_node_get_object(node);
+	const gchar *location = json_object_get_string_member(obj, "location");
+	gchar *config, *acrumb, *session;
+	gchar **params;
+	int i;
+
+	// https://login.yahoo.com/account/challenge/password?...&s=SESSION&c=CONFIG&acrumb=ACRUMB
+	params = g_strsplit(strchr(location, '?') ? : location, "&", -1);
+
+	config = acrumb = session = NULL;
+
+	for (i = 0; params[i]; i++) {
+		if (!strncmp(params[i], "c=", 2)) {
+			config = params[i] + 2;
+		} else if (!strncmp(params[i], "s=", 2)) {
+			session = params[i] + 2;
+		} else if (!strncmp(params[i], "acrumb=", 7)) {
+			acrumb = params[i] + 7;
+		}
+	}
+
+	GString *postdata = g_string_new("");
+
+	g_string_append_printf(postdata, "username=%s&", purple_url_encode(purple_account_get_username(ya->account)));
+	g_string_append_printf(postdata, "password=%s&", purple_url_encode(purple_connection_get_password(ya->pc)));
+	g_string_append_printf(postdata, "acrumb=%s&", purple_url_encode(acrumb));
+	g_string_append_printf(postdata, "config=%s&", purple_url_encode(config));
+	g_string_append_printf(postdata, "s=%s&", purple_url_encode(session));
+	g_string_append(postdata, "verifyPassword=Sign%C2%A0in");
+
+	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
+	yahoo_fetch_url(ya, location, postdata->str, yahoo_auth_r3_callback, NULL);
+
+	g_string_free(postdata, TRUE);
+	g_strfreev(params);
+}
+
+static void
+yahoo_auth_r1_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 {
 	JsonObject *obj = json_node_get_object(node);
 	JsonObject *render = json_object_get_object_member(obj, "render");
@@ -1005,14 +1045,12 @@ yahoo_preauth_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 	GString *postdata = g_string_new("");
 
 	g_string_append_printf(postdata, "username=%s&", purple_url_encode(purple_account_get_username(ya->account)));
-	g_string_append_printf(postdata, "password=%s&", purple_url_encode(purple_connection_get_password(ya->pc)));
 	g_string_append_printf(postdata, "acrumb=%s&", purple_url_encode(acrumb));
 	g_string_append_printf(postdata, "config=%s&", purple_url_encode(config));
-	g_string_append_printf(postdata, "s=%s&", purple_url_encode(s));
-	g_string_append(postdata, "verifyPassword=Sign%C2%A0in");
+	g_string_append_printf(postdata, "session=%s&", purple_url_encode(s));
 	
 	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
-	yahoo_fetch_url(ya, "https://login.yahoo.com/account/challenge/password?.done=https%3A%2F%2Fmobileexchange.yahoo.com%3Fslcc%3D0", postdata->str, yahoo_auth_callback, NULL);
+	yahoo_fetch_url(ya, "https://login.yahoo.com/?.done=https%3A%2F%2Fmessenger.yahoo.com%2F?slcc=0", postdata->str, yahoo_auth_r2_callback, NULL);
 	
 	g_string_free(postdata, TRUE);
 }
@@ -1085,7 +1123,7 @@ yahoo_login(PurpleAccount *account)
 	
 	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
 
-	yahoo_fetch_url(ya, "https://login.yahoo.com/m?.asdk_embedded=1&.done=https%3A%2F%2Fmobileexchange.yahoo.com%3Fslcc%3D0", NULL, yahoo_preauth_callback, NULL);
+	yahoo_fetch_url(ya, "https://login.yahoo.com/?done.=https%3A%2F%2Fmessenger.yahoo.com%2F?slcc=0", NULL, yahoo_auth_r1_callback, NULL);
 
 	//Build the initial hash tables from the current buddy list
 	yahoo_build_groups_from_blist(ya);
