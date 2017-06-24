@@ -296,22 +296,10 @@ yahoo_response_callback(PurpleHttpConnection *http_conn, PurpleHttpResponse *res
 	g_free(conn);
 }
 
-static void
-yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, YahooProxyCallbackFunc callback, gpointer user_data)
+static PurpleHttpRequest *
+yahoo_prepare_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata)
 {
-	PurpleAccount *account;
-	YahooProxyConnection *conn;
-	gchar *cookies;
-	
-	account = ya->account;
-	if (purple_account_is_disconnected(account)) return;
-	
-	conn = g_new0(YahooProxyConnection, 1);
-	conn->ya = ya;
-	conn->callback = callback;
-	conn->user_data = user_data;
-	
-	cookies = yahoo_cookies_to_string(ya);
+	gchar *cookies = yahoo_cookies_to_string(ya);
 	
 	purple_debug_info("yahoo", "Fetching url %s\n", url);
 
@@ -331,15 +319,30 @@ yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, Yahoo
 		purple_http_request_set_contents(request, postdata, -1);
 	}
 	
+	g_free(cookies);
+
+	return request;
+}
+
+static void
+yahoo_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdata, YahooProxyCallbackFunc callback, gpointer user_data)
+{
+	YahooProxyConnection *conn;
+	PurpleHttpRequest *request;
+
+	if (purple_account_is_disconnected(ya->account)) return;
+
+	conn = g_new0(YahooProxyConnection, 1);
+	conn->ya = ya;
+	conn->callback = callback;
+	conn->user_data = user_data;
+
+	request = yahoo_prepare_fetch_url(ya, url, postdata);
+
 	purple_http_request(ya->pc, request, yahoo_response_callback, conn);
 	purple_http_request_unref(request);
 
 	// TODO: add something to ya->http_conns
-
-	//if (http_conn != NULL)
-	//	ya->http_conns = g_slist_prepend(ya->http_conns, http_conn);
-
-	g_free(cookies);
 }
 
 static void
