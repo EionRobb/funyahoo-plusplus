@@ -307,6 +307,7 @@ yahoo_prepare_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdat
 	purple_http_request_header_set(request, "Accept", "*/*");
 	purple_http_request_header_set(request, "User-Agent", YAHOO_USERAGENT);
 	purple_http_request_header_set(request, "Cookie", cookies);
+	purple_http_request_header_set(request, "x-requested-with", "XMLHttpRequest");
 	
 	if (postdata) {
 		purple_debug_info("yahoo", "With postdata %s\n", postdata);
@@ -317,6 +318,7 @@ yahoo_prepare_fetch_url(YahooAccount *ya, const gchar *url, const gchar *postdat
 			purple_http_request_header_set(request, "Content-Type", "application/x-www-form-urlencoded");
 		}
 		purple_http_request_set_contents(request, postdata, -1);
+		purple_http_request_set_method(request, "POST");
 	}
 	
 	g_free(cookies);
@@ -792,22 +794,36 @@ yahoo_rpc_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 }
 	
 static void
-yahoo_auth_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
+yahoo_auth_r3_callback(PurpleHttpConnection *http_conn, PurpleHttpResponse *response, gpointer user_data)
 {
-	JsonObject *obj = json_node_get_object(node);
+	YahooAccount *ya = user_data;
+	const char *location = purple_http_response_get_header(response, "Location");
+
+	purple_debug_misc("yahoo", "Ignore the \"without success\" of the previous message. It says that every time.\n");
 	
-	if (purple_strequal(json_object_get_string_member(obj, "status"), "error")) {
-		if (purple_strequal(json_object_get_string_member(obj, "code"), "1212")) {
-			purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_AUTHENTICATION_FAILED,  json_object_get_string_member(obj, "message"));
-		} else {
-			purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, json_object_get_string_member(obj, "message"));
+	yahoo_update_cookies(ya, purple_http_response_get_headers_by_name(response, "Set-Cookie"));
+
+
+	if (g_str_has_prefix(location, "/account/challenge/")) {
+		char *msg = yahoo_string_get_chunk(location, -1, "/account/challenge/", "?");
+		gboolean is_bad = TRUE;
+
+		if (!purple_strequal(msg, "challenge-selector")) {
+			is_bad = FALSE;
 		}
-	} else {
-		const gchar *rpcdata = "{\"msg\":\"OpenSession\",\"device\":{\"kind\":\"mobile\"},\"auth\":{\"provider\":\"signin\"},\"version\":{\"platform\":\"web\",\"app\":\"iris/dogfood\",\"appVersion\":" YAHOO_PRETEND_VERSION "},\"batch\":[]}";
 		
-		purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
-		yahoo_fetch_url(ya, "https://prod.iris.yahoo.com/prod/rpc?wait=1&v=1", rpcdata, yahoo_rpc_callback, NULL);
+		if (is_bad) {
+			purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_AUTHENTICATION_FAILED, msg);
+			g_free(msg);
+			return;
+		}
+		g_free(msg);
 	}
+
+	const gchar *rpcdata = "{\"msg\":\"OpenSession\",\"device\":{\"kind\":\"mobile\"},\"auth\":{\"provider\":\"signin\"},\"version\":{\"platform\":\"web\",\"app\":\"iris/dogfood\",\"appVersion\":" YAHOO_PRETEND_VERSION "},\"batch\":[]}";
+
+	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
+	yahoo_fetch_url(ya, "https://prod.iris.yahoo.com/prod/rpc?wait=1&v=1", rpcdata, yahoo_rpc_callback, NULL);
 }
 
 static void
@@ -825,37 +841,77 @@ yahoo_restart_channel(YahooAccount *ya)
 }
 
 static void
-yahoo_preauth_callback(PurpleHttpConnection *http_conn, PurpleHttpResponse *response, gpointer user_data)
+yahoo_auth_r2_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 {
-	gsize len;
-	const gchar *url_text = purple_http_response_get_data(response, &len);
-	YahooAccount *ya = user_data;
-	GString *postdata = g_string_new("");
-	gchar *crumb = yahoo_string_get_chunk(url_text, len, "<input name=\"_crumb\" type=\"hidden\" value=\"", "\"");
+	PurpleHttpRequest *request;
+	JsonObject *obj = json_node_get_object(node);
+	const gchar *url = json_object_get_string_member(obj, "location");
+	gchar *config, *acrumb, *session;
+	gchar **params;
+	int i;
 
-	ya->http_conns = g_slist_remove(ya->http_conns, http_conn);
-	
-	yahoo_update_cookies(ya, purple_http_response_get_headers_by_name(response, "Set-Cookie"));
+	// https://login.yahoo.com/account/challenge/password?...&s=SESSION&c=CONFIG&acrumb=ACRUMB
+	params = g_strsplit(strchr(url, '?') ? : url, "&", -1);
+
+	config = acrumb = session = NULL;
+
+	for (i = 0; params[i]; i++) {
+		if (!strncmp(params[i], "c=", 2)) {
+			config = params[i] + 2;
+		} else if (!strncmp(params[i], "s=", 2)) {
+			session = params[i] + 2;
+		} else if (!strncmp(params[i], "acrumb=", 7)) {
+			acrumb = params[i] + 7;
+		}
+	}
+
+	GString *postdata = g_string_new("");
+
+	g_string_append_printf(postdata, "username=%s&", purple_url_encode(purple_account_get_username(ya->account)));
+	g_string_append_printf(postdata, "password=%s&", purple_url_encode(purple_connection_get_password(ya->pc)));
+	g_string_append_printf(postdata, "acrumb=%s&", purple_url_encode(acrumb));
+	g_string_append_printf(postdata, "config=%s&", purple_url_encode(config));
+	g_string_append_printf(postdata, "s=%s&", purple_url_encode(session));
+	g_string_append(postdata, "verifyPassword=Sign%C2%A0in");
+
+	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
+
+	request = yahoo_prepare_fetch_url(ya, url, postdata->str);
+
+	purple_http_request_set_max_redirects(request, 0);
+	purple_http_request(ya->pc, request, yahoo_auth_r3_callback, ya);
+	purple_http_request_unref(request);
+
+	g_string_free(postdata, TRUE);
+	g_strfreev(params);
+}
+
+static void
+yahoo_auth_r1_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
+{
+	JsonObject *obj = json_node_get_object(node);
+	JsonObject *render = json_object_get_object_member(obj, "render");
+	JsonObject *challenge = json_object_get_object_member(render, "challenge");
+
+	const gchar *acrumb = json_object_get_string_member(challenge, "acrumb");
+	const gchar *config = json_object_get_string_member(challenge, "config");
+	const gchar *s = json_object_get_string_member(challenge, "session");
 
 	if (g_hash_table_lookup(ya->cookie_table, "B") == NULL) {
 		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Couldn't get login cookies");
 		return;
 	}
 	
+	GString *postdata = g_string_new("");
+
 	g_string_append_printf(postdata, "username=%s&", purple_url_encode(purple_account_get_username(ya->account)));
-	g_string_append_printf(postdata, "passwd=%s&", purple_url_encode(purple_connection_get_password(ya->pc)));
-	g_string_append_printf(postdata, "_crumb=%s&", purple_url_encode(crumb));
-	g_string_append(postdata, "countrycode=1&");
-	g_string_append(postdata, "signin=&");
-	g_string_append(postdata, "otp_channel=&");
-	g_string_append(postdata, ".persistent=y&");
-	g_string_append(postdata, "_format=json&");
-	g_string_append(postdata, "_seqid=1&");
+	g_string_append_printf(postdata, "acrumb=%s&", purple_url_encode(acrumb));
+	g_string_append_printf(postdata, "config=%s&", purple_url_encode(config));
+	g_string_append_printf(postdata, "session=%s&", purple_url_encode(s));
 	
 	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
-	yahoo_fetch_url(ya, "https://login.yahoo.com/?.pd=&.src=messenger&.done=https%3A%2F%2Fmessenger.yahoo.com%2F", postdata->str, yahoo_auth_callback, NULL);
+	yahoo_fetch_url(ya, "https://login.yahoo.com/?.done=https%3A%2F%2Fmessenger.yahoo.com%2F", postdata->str, yahoo_auth_r2_callback, NULL);
 	
-	g_free(crumb);
 	g_string_free(postdata, TRUE);
 }
 
@@ -909,13 +965,7 @@ static void
 yahoo_login(PurpleAccount *account)
 {
 	YahooAccount *ya;
-	PurpleHttpConnection *http_conn;
 	PurpleConnection *pc = purple_account_get_connection(account);
-	GString *preauth_url = g_string_new("https://login.yahoo.com/?");
-	
-	g_string_append_printf(preauth_url, ".done=%s&", purple_url_encode("https://messenger.yahoo.com/"));
-	g_string_append_printf(preauth_url, ".src=%s&", purple_url_encode("messenger"));
-	g_string_append(preauth_url, ".asdk_embedded=1&");
 	
 	ya = g_new0(YahooAccount, 1);
 	purple_connection_set_protocol_data(pc, ya);
@@ -932,19 +982,9 @@ yahoo_login(PurpleAccount *account)
 	ya->media_urls = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
 	
 	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
-	{
-		PurpleHttpRequest *request = purple_http_request_new(preauth_url->str);
-		purple_http_request_header_set(request, "User-Agent", YAHOO_USERAGENT);
-		http_conn = purple_http_request(ya->pc, request, yahoo_preauth_callback, ya);
-		purple_http_request_unref(request);
-	}
-	
-	if (http_conn != NULL) {
-		ya->http_conns = g_slist_prepend(ya->http_conns, http_conn);
-	}
-	
-	g_string_free(preauth_url, TRUE);
-	
+
+	yahoo_fetch_url(ya, "https://login.yahoo.com/?done.=https%3A%2F%2Fmessenger.yahoo.com%2F", NULL, yahoo_auth_r1_callback, NULL);
+
 	//Build the initial hash tables from the current buddy list
 	yahoo_build_groups_from_blist(ya);
 	
