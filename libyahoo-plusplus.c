@@ -764,6 +764,7 @@ yahoo_process_msg_array(JsonArray *array, guint index_, JsonNode *element_node, 
 }
 
 static void yahoo_start_socket(YahooAccount *ya);
+static void yahoo_open_session(YahooAccount *ya, const gchar *crumb);
 
 static void
 yahoo_rpc_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
@@ -789,10 +790,23 @@ yahoo_rpc_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, _("Please login to the Yahoo messenger website once, to continue"));
 	} else if (purple_strequal(msg, "InvalidCredentials")) {
 		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Session expired");
+	} else if (purple_strequal(msg, "InvalidCrumb")) {
+		yahoo_open_session(ya, json_object_get_string_member(obj, "crumb"));
 	} else {
 		const char *msg = json_object_get_string_member(obj, "reason") ? : json_object_get_string_member(obj, "msg");
 		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, msg);
 	}
+}
+
+static void
+yahoo_open_session(YahooAccount *ya, const gchar *crumb)
+{
+	const gchar *postdata = "{\"msg\":\"OpenSession\",\"device\":{\"kind\":\"mobile\"},\"auth\":{\"provider\":\"signin\"},\"version\":{\"platform\":\"web\",\"app\":\"iris/dogfood\",\"appVersion\":" YAHOO_PRETEND_VERSION "},\"batch\":[]}";
+	gchar *url = g_strconcat("https://prod.iris.yahoo.com/prod/rpc?wait=1&v=1&crumb=", crumb, NULL);
+
+	yahoo_fetch_url(ya, url, postdata, yahoo_rpc_callback, NULL);
+
+	g_free(url);
 }
 	
 static void
@@ -822,10 +836,8 @@ yahoo_auth_r3_callback(PurpleHttpConnection *http_conn, PurpleHttpResponse *resp
 		g_free(msg);
 	}
 
-	const gchar *rpcdata = "{\"msg\":\"OpenSession\",\"device\":{\"kind\":\"mobile\"},\"auth\":{\"provider\":\"signin\"},\"version\":{\"platform\":\"web\",\"app\":\"iris/dogfood\",\"appVersion\":" YAHOO_PRETEND_VERSION "},\"batch\":[]}";
-
+	yahoo_open_session(ya, NULL);
 	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
-	yahoo_fetch_url(ya, "https://prod.iris.yahoo.com/prod/rpc?wait=1&v=1", rpcdata, yahoo_rpc_callback, NULL);
 }
 
 static void
