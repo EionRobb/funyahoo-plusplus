@@ -107,6 +107,7 @@ json_array_foreach_element_reverse (JsonArray        *array,
 
 
 #include "purplecompat.h"
+#include "glibcompat.h"
 
 // Purple2 compat functions
 #if !PURPLE_VERSION_CHECK(3, 0, 0)
