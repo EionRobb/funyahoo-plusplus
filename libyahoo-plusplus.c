@@ -909,7 +909,7 @@ yahoo_auth_r1_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 
 	const gchar *acrumb = json_object_get_string_member(challenge, "acrumb");
 	const gchar *config = json_object_get_string_member(challenge, "config");
-	const gchar *s = json_object_get_string_member(challenge, "session");
+	const gchar *s = json_object_get_string_member(challenge, "sessionIndex");
 
 	if (g_hash_table_lookup(ya->cookie_table, "B") == NULL) {
 		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Couldn't get login cookies");
@@ -921,7 +921,7 @@ yahoo_auth_r1_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 	g_string_append_printf(postdata, "username=%s&", purple_url_encode(purple_account_get_username(ya->account)));
 	g_string_append_printf(postdata, "acrumb=%s&", purple_url_encode(acrumb));
 	g_string_append_printf(postdata, "config=%s&", purple_url_encode(config));
-	g_string_append_printf(postdata, "session=%s&", purple_url_encode(s));
+	g_string_append_printf(postdata, "sessionIndex=%s&", purple_url_encode(s));
 	
 	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
 	yahoo_fetch_url(ya, "https://login.yahoo.com/?.done=https%3A%2F%2Fmessenger.yahoo.com%2F", postdata->str, yahoo_auth_r2_callback, NULL);
