@@ -919,6 +919,16 @@ yahoo_auth_r1_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 	GString *postdata = g_string_new("");
 
 	g_string_append_printf(postdata, "username=%s&", purple_url_encode(purple_account_get_username(ya->account)));
+	
+	//iterate over challenge
+	GList *key, *challenge_keys = json_object_get_members(challenge);
+	for(key = challenge_keys; key; key = key->next) {
+		const gchar *value = json_object_get_string_member(challenge, key->data);
+		g_string_append_printf(postdata, "%s=", purple_url_encode(key->data));
+		g_string_append_printf(postdata, "%s&", purple_url_encode(value));
+	}
+	g_list_free(challenge_keys);
+	
 	g_string_append_printf(postdata, "acrumb=%s&", purple_url_encode(acrumb));
 	g_string_append_printf(postdata, "config=%s&", purple_url_encode(config));
 	g_string_append_printf(postdata, "sessionIndex=%s&", purple_url_encode(s));
