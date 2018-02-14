@@ -824,7 +824,7 @@ yahoo_auth_r3_callback(PurpleHttpConnection *http_conn, PurpleHttpResponse *resp
 		char *msg = yahoo_string_get_chunk(location, -1, "/account/challenge/", "?");
 		gboolean is_bad = TRUE;
 
-		if (!purple_strequal(msg, "challenge-selector")) {
+		if (!purple_strequal(msg, "challenge-selector") && !purple_strequal(msg, "session-expired")) {
 			is_bad = FALSE;
 		}
 		
