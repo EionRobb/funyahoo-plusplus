@@ -857,6 +857,11 @@ yahoo_restart_channel(YahooAccount *ya)
 static void
 yahoo_auth_r2_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 {
+	if (!node) {
+		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, "Invalid response from server");
+		return;
+	}
+
 	PurpleHttpRequest *request;
 	JsonObject *obj = json_node_get_object(node);
 	const gchar *url = json_object_get_string_member(obj, "location");
