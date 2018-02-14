@@ -824,7 +824,7 @@ yahoo_auth_r3_callback(PurpleHttpConnection *http_conn, PurpleHttpResponse *resp
 		char *msg = yahoo_string_get_chunk(location, -1, "/account/challenge/", "?");
 		gboolean is_bad = TRUE;
 
-		if (!purple_strequal(msg, "challenge-selector")) {
+		if (!purple_strequal(msg, "challenge-selector") && !purple_strequal(msg, "session-expired")) {
 			is_bad = FALSE;
 		}
 		
@@ -857,23 +857,26 @@ yahoo_restart_channel(YahooAccount *ya)
 static void
 yahoo_auth_r2_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 {
+	if (!node) {
+		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_OTHER_ERROR, "Invalid response from server");
+		return;
+	}
+
 	PurpleHttpRequest *request;
 	JsonObject *obj = json_node_get_object(node);
 	const gchar *url = json_object_get_string_member(obj, "location");
-	gchar *config, *acrumb, *session;
+	gchar *acrumb, *session;
 	gchar **params;
 	int i;
 
-	// https://login.yahoo.com/account/challenge/password?...&s=SESSION&c=CONFIG&acrumb=ACRUMB
+	// https://login.yahoo.com/account/challenge/password?...&sessionIndex=SESSION&c=CONFIG&acrumb=ACRUMB
 	params = g_strsplit(strchr(url, '?') ? : url, "&", -1);
 
-	config = acrumb = session = NULL;
+	acrumb = session = NULL;
 
 	for (i = 0; params[i]; i++) {
-		if (!strncmp(params[i], "c=", 2)) {
-			config = params[i] + 2;
-		} else if (!strncmp(params[i], "s=", 2)) {
-			session = params[i] + 2;
+		if (!strncmp(params[i], "sessionIndex=", 13)) {
+			session = params[i] + 13;
 		} else if (!strncmp(params[i], "acrumb=", 7)) {
 			acrumb = params[i] + 7;
 		}
@@ -884,9 +887,8 @@ yahoo_auth_r2_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 	g_string_append_printf(postdata, "username=%s&", purple_url_encode(purple_account_get_username(ya->account)));
 	g_string_append_printf(postdata, "password=%s&", purple_url_encode(purple_connection_get_password(ya->pc)));
 	g_string_append_printf(postdata, "acrumb=%s&", purple_url_encode(acrumb));
-	g_string_append_printf(postdata, "config=%s&", purple_url_encode(config));
-	g_string_append_printf(postdata, "s=%s&", purple_url_encode(session));
-	g_string_append(postdata, "verifyPassword=Sign%C2%A0in");
+	g_string_append_printf(postdata, "sessionIndex=%s&", purple_url_encode(session));
+	g_string_append(postdata, "verifyPassword=Sign%C2%A0in&passwordContext=normal");
 
 	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
 
@@ -907,10 +909,6 @@ yahoo_auth_r1_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 	JsonObject *render = json_object_get_object_member(obj, "render");
 	JsonObject *challenge = json_object_get_object_member(render, "challenge");
 
-	const gchar *acrumb = json_object_get_string_member(challenge, "acrumb");
-	const gchar *config = json_object_get_string_member(challenge, "config");
-	const gchar *s = json_object_get_string_member(challenge, "sessionIndex");
-
 	if (g_hash_table_lookup(ya->cookie_table, "B") == NULL) {
 		purple_connection_error(ya->pc, PURPLE_CONNECTION_ERROR_NETWORK_ERROR, "Couldn't get login cookies");
 		return;
@@ -918,20 +916,16 @@ yahoo_auth_r1_callback(YahooAccount *ya, JsonNode *node, gpointer user_data)
 	
 	GString *postdata = g_string_new("");
 
-	g_string_append_printf(postdata, "username=%s&", purple_url_encode(purple_account_get_username(ya->account)));
+	g_string_append_printf(postdata, "username=%s&signin=Next", purple_url_encode(purple_account_get_username(ya->account)));
 	
 	//iterate over challenge
 	GList *key, *challenge_keys = json_object_get_members(challenge);
 	for(key = challenge_keys; key; key = key->next) {
 		const gchar *value = json_object_get_string_member(challenge, key->data);
-		g_string_append_printf(postdata, "%s=", purple_url_encode(key->data));
-		g_string_append_printf(postdata, "%s&", purple_url_encode(value));
+		g_string_append_printf(postdata, "&%s=", purple_url_encode(key->data));
+		g_string_append_printf(postdata, "%s", purple_url_encode(value));
 	}
 	g_list_free(challenge_keys);
-	
-	g_string_append_printf(postdata, "acrumb=%s&", purple_url_encode(acrumb));
-	g_string_append_printf(postdata, "config=%s&", purple_url_encode(config));
-	g_string_append_printf(postdata, "sessionIndex=%s&", purple_url_encode(s));
 	
 	purple_connection_set_state(ya->pc, PURPLE_CONNECTION_CONNECTING);
 	yahoo_fetch_url(ya, "https://login.yahoo.com/?.done=https%3A%2F%2Fmessenger.yahoo.com%2F", postdata->str, yahoo_auth_r2_callback, NULL);
